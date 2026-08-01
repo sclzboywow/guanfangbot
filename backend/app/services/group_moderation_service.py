@@ -161,7 +161,8 @@ class GroupModerationService:
         if detection is not None:
             last_violation = parse_time(member.get("last_violation_at"))
             cooldown = int(settings.get("escalation_cooldown_seconds", 60))
-            may_escalate = not blocked or last_violation is None or (now - last_violation).total_seconds() >= cooldown
+            cooldown_elapsed = last_violation is None or (now - last_violation).total_seconds() >= cooldown
+            may_escalate = not blocked or (detection.source == "content" and cooldown_elapsed)
             if may_escalate:
                 strike_count = int(member.get("strike_count", 0)) + 1
                 permanent_after = int(settings.get("permanent_after", 5))
