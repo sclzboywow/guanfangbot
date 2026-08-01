@@ -12,11 +12,12 @@
 
 添加后进入开发工具：
 
-- Access Token 状态与手动刷新
 - QQ OpenAPI 请求调试
 - 事件订阅记录
 - HTTP 回调验证、签名校验与事件日志
-- 多机器人独立凭证和 Token 缓存
+- 多机器人独立凭证和 Access Token 缓存
+
+Access Token 由后端在调用 OpenAPI 时自动获取、缓存，并在失效后重新申请。管理台不提供手动刷新操作。
 
 ## 技术栈
 
@@ -48,13 +49,22 @@ http://服务器IP:5173
 https://你的域名/api/events/callback/{AppID}
 ```
 
+例如：
+
+```text
+https://bot.yzdoc.cn/api/events/callback/机器人A的AppID
+https://bot.yzdoc.cn/api/events/callback/机器人B的AppID
+```
+
+AppID 不是密钥，可以用于区分回调路径。真正需要保密的是 AppSecret / Key。
+
 兼容入口仍保留：
 
 ```text
 https://你的域名/api/events/callback
 ```
 
-统一入口仅建议用于单机器人，或由请求头提供 AppID 的场景。
+统一入口仅建议用于单机器人，或由请求头明确提供 AppID 的场景。多机器人正式使用时应采用独立地址，避免回调验签串用凭证。
 
 ## API
 
@@ -64,7 +74,6 @@ https://你的域名/api/events/callback
 - `PATCH /api/bots/{bot_id}`
 - `DELETE /api/bots/{bot_id}`
 - `GET /api/qqbot/credential-status?bot_id=...`
-- `POST /api/qqbot/token/refresh?bot_id=...`
 - `POST /api/qqbot/openapi`
 - `GET /api/events/recent?bot_id=...`
 - `POST /api/events/callback/{app_id}`
@@ -73,6 +82,7 @@ https://你的域名/api/events/callback
 
 - Key 和 Access Token 不返回前端。
 - OpenAPI 调用由后端代理，浏览器只传机器人内部 ID。
+- Access Token 由后端自动管理，不提供前端手动刷新接口。
 - `backend/data/bots.json` 不应提交到 Git。
 - 当前文件存储适合个人开发台；正式多人使用前应增加登录、权限、数据库加密和审计。
 
