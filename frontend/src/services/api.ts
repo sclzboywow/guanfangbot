@@ -15,21 +15,14 @@ export interface Bot {
 }
 
 export interface BotCreatePayload {
-  name: string
-  description?: string
   app_id: string
   client_secret: string
-  status?: Bot['status']
-  callback_url?: string
-  event_scopes?: string[]
+  callback_url: string
 }
 
 export interface BotUpdatePayload {
-  name?: string
-  description?: string
   app_id?: string
   client_secret?: string
-  status?: Bot['status']
   callback_url?: string
   event_scopes?: string[]
 }
@@ -44,6 +37,15 @@ export interface CredentialStatus {
   bot_id?: string
   app_id?: string
   detail?: string
+}
+
+export interface BotEvent {
+  id: string
+  bot_id?: string
+  app_id?: string
+  type: string
+  received_at: string
+  payload: unknown
 }
 
 function errorMessage(data: unknown, status: number): string {
@@ -83,5 +85,5 @@ export const api = {
   refreshToken: (botId: string) => request<{ ok: boolean; expires_in: number }>(`/qqbot/token/refresh?bot_id=${encodeURIComponent(botId)}`, { method: 'POST' }),
   openApi: (payload: { bot_id: string; method: string; path: string; query?: Record<string, string>; body?: unknown }) =>
     request<{ status_code: number; data: unknown; headers: Record<string, string> }>('/qqbot/openapi', { method: 'POST', body: JSON.stringify(payload) }),
-  recentEvents: () => request<Array<{ id: string; type: string; received_at: string; payload: unknown }>>('/events/recent'),
+  recentEvents: (botId?: string) => request<BotEvent[]>(botId ? `/events/recent?bot_id=${encodeURIComponent(botId)}` : '/events/recent'),
 }

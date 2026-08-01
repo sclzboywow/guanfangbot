@@ -7,10 +7,8 @@ import RobotMark from '@/components/RobotMark.vue'
 const mobileOpen = ref(false)
 const links = [
   { to: '/bots', label: '我的机器人', icon: 'bot' },
-  { to: '/events', label: '事件与回调', icon: 'events' },
-  { to: '/testers', label: '开发者测试', icon: 'users' },
-  { to: '/api-console', label: 'API 调试台', icon: 'terminal' },
-  { to: '/settings', label: '项目设置', icon: 'settings' },
+  { to: '/events', label: '事件调试', icon: 'events' },
+  { to: '/api-console', label: 'OpenAPI 调试', icon: 'terminal' },
 ]
 </script>
 
@@ -22,7 +20,7 @@ const links = [
         <RobotMark />
         <div>
           <div class="brand-name">QQ 机器人</div>
-          <div class="brand-sub">开发与运营管理台</div>
+          <div class="brand-sub">官方机器人开发台</div>
         </div>
       </div>
 
@@ -38,20 +36,9 @@ const links = [
         </a>
       </nav>
 
-      <div class="sidebar-note">
-        <div class="note-dot"></div>
-        <div>
-          <strong>开发模式</strong>
-          <span>模拟数据已启用</span>
-        </div>
-      </div>
-
-      <div class="account-card">
-        <div class="account-avatar">DEV</div>
-        <div class="account-text">
-          <strong>本地开发者</strong>
-          <span>密钥由后端管理</span>
-        </div>
+      <div class="sidebar-summary">
+        <strong>开发控制台</strong>
+        <span>凭证、回调、事件与接口调试</span>
       </div>
     </aside>
     <div v-if="mobileOpen" class="mask" @click="mobileOpen = false"></div>
@@ -72,17 +59,10 @@ const links = [
 .nav-ico { width: 22px; height: 22px; display: grid; place-items: center; color: var(--ink-3); }
 .router-link-active .nav-ico { color: var(--accent); }
 .external { margin-left: auto; color: var(--ink-4); }
-.sidebar-note { display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 11px 12px; border-radius: 14px; background: rgba(52,199,89,.08); color: #238541; }
-.sidebar-note strong, .sidebar-note span { display: block; }
-.sidebar-note strong { font-size: 12.5px; }
-.sidebar-note span { margin-top: 2px; font-size: 10.5px; opacity: .75; }
-.note-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--online); box-shadow: 0 0 0 4px rgba(52,199,89,.15); }
-.account-card { display: flex; align-items: center; gap: 11px; padding: 13px; border: 1px solid rgba(60,60,67,.08); border-radius: 18px; box-shadow: 0 10px 24px rgba(17,24,39,.05); }
-.account-avatar { width: 38px; height: 38px; display: grid; place-items: center; flex: none; border-radius: 50%; background: linear-gradient(135deg,#1b2735,#4b6584); color: white; font-size: 11px; font-weight: 800; }
-.account-text { min-width: 0; }
-.account-text strong, .account-text span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-text strong { font-size: 13px; }
-.account-text span { margin-top: 3px; color: var(--ink-4); font-size: 10.5px; }
+.sidebar-summary { padding: 14px; border: 1px solid rgba(60,60,67,.08); border-radius: 18px; background: #fff; box-shadow: 0 10px 24px rgba(17,24,39,.05); }
+.sidebar-summary strong, .sidebar-summary span { display: block; }
+.sidebar-summary strong { color: var(--ink); font-size: 12.5px; }
+.sidebar-summary span { margin-top: 5px; color: var(--ink-4); font-size: 10.5px; line-height: 1.5; }
 .main { min-width: 0; min-height: 100vh; }
 .mobile-menu { display: none; }
 .mask { display: none; }
