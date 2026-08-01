@@ -107,16 +107,23 @@ def extract_member_name(payload: dict[str, Any]) -> str:
     data = _event_data(payload)
     author = _dict(data.get("author"))
     member = _dict(data.get("member"))
+    member_user = _dict(member.get("user"))
     user = _dict(data.get("user"))
     return _first_text(
         data.get("nick"),
         data.get("nickname"),
+        data.get("username"),
         author.get("username"),
         author.get("nick"),
+        author.get("nickname"),
         member.get("nick"),
         member.get("nickname"),
+        member.get("username"),
+        member_user.get("username"),
+        member_user.get("nick"),
         user.get("username"),
         user.get("nick"),
+        user.get("nickname"),
     )
 
 
@@ -157,9 +164,8 @@ class GroupVerificationService:
 
     @staticmethod
     def question_message(question: str) -> str:
-        return single_line(
-            f"欢迎加入本群，请先完成验证：{question} 请直接发送数字答案；验证通过前发送的其他消息会被自动撤回。"
-        )
+        # 群聊发送 <@openid> 会被客户端原样显示，官方暂不支持真正 @ 渲染。
+        return single_line(f"欢迎加入本群，请先完成验证：{question} 请直接发送数字答案。")
 
     @staticmethod
     def success_message() -> str:
@@ -253,6 +259,10 @@ class GroupVerificationService:
         session = self.repository.get_pending_session(bot_id, group_openid, member_openid)
         if session is None:
             return
+
+        member_name = extract_member_name(payload)
+        if member_name and not str(session.get("member_name") or "").strip():
+            self.repository.update_member_name(str(session["id"]), member_name)
 
         message_id = extract_message_id(payload)
         if not self.repository.claim_message(bot_id, message_id, "verify_or_retract"):

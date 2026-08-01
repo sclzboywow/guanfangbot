@@ -163,7 +163,10 @@ class GroupVerificationRepository:
                     retracted_messages, last_message_at, last_error
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, 0, 0, NULL, '')
                 ON CONFLICT(bot_id, group_openid, member_openid) DO UPDATE SET
-                    member_name = excluded.member_name,
+                    member_name = CASE
+                        WHEN excluded.member_name != '' THEN excluded.member_name
+                        ELSE verification_sessions.member_name
+                    END,
                     operand_a = excluded.operand_a,
                     operand_b = excluded.operand_b,
                     operator = excluded.operator,
@@ -252,6 +255,20 @@ class GroupVerificationRepository:
                 (message_id, bot_id, utc_now(), action),
             )
             return cursor.rowcount == 1
+
+    def update_member_name(self, session_id: str, member_name: str) -> None:
+        cleaned = str(member_name or "").strip()
+        if not cleaned:
+            return
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE verification_sessions
+                SET member_name = ?
+                WHERE id = ? AND (member_name = '' OR member_name IS NULL)
+                """,
+                (cleaned, session_id),
+            )
 
     def mark_verified(self, session_id: str, *, verified_at: str | None = None) -> None:
         with self._lock, self._connect() as connection:

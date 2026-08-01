@@ -214,7 +214,7 @@ onMounted(async () => {
 
               <div class="preview">
                 <span>群内提示示例</span>
-                <code>欢迎加入本群，请先完成验证：8 + 7 = ? 请直接发送数字答案；验证通过前发送的其他消息会被自动撤回。</code>
+                <code>欢迎加入本群，请先完成验证：8 + 7 = ? 请直接发送数字答案。</code>
               </div>
             </section>
 
