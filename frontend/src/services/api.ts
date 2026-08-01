@@ -81,6 +81,64 @@ export interface EventStatusResponse {
   groups: EventStatusGroup[]
 }
 
+export interface GroupVerificationSettings {
+  bot_id: string
+  enabled: boolean
+  min_operand: number
+  max_operand: number
+  updated_at?: string | null
+}
+
+export interface GroupVerificationSession {
+  id: string
+  bot_id: string
+  group_openid: string
+  member_openid: string
+  member_name: string
+  operand_a: number
+  operand_b: number
+  operator: '+' | '-'
+  answer: number
+  question: string
+  status: 'pending' | 'verified' | 'removed'
+  joined_at: string
+  verified_at?: string | null
+  removed_at?: string | null
+  wrong_attempts: number
+  retracted_messages: number
+  last_message_at?: string | null
+  last_error: string
+}
+
+export interface GroupVerificationLog {
+  id: number
+  bot_id: string
+  session_id?: string | null
+  action: string
+  success: boolean
+  status_code?: number | null
+  detail: string
+  created_at: string
+}
+
+export interface GroupVerificationStatus {
+  bot_id: string
+  app_id: string
+  bot_name: string
+  settings: GroupVerificationSettings
+  required_events: Array<{ code: string; configured: boolean }>
+  requirements_ready: boolean
+  counts: { pending: number; verified: number; removed: number; total: number }
+  sessions: GroupVerificationSession[]
+  logs: GroupVerificationLog[]
+  behavior: {
+    answer_requires_at: boolean
+    pending_messages_retracted: boolean
+    verification_expires: boolean
+    outbound_messages_single_line: boolean
+  }
+}
+
 function errorMessage(data: unknown, status: number): string {
   if (data && typeof data === 'object' && 'detail' in data) {
     const detail = (data as { detail: unknown }).detail
@@ -120,4 +178,10 @@ export const api = {
     request<{ status_code: number; data: unknown; headers: Record<string, string> }>('/qqbot/openapi', { method: 'POST', body: JSON.stringify(payload) }),
   recentEvents: (botId?: string) => request<BotEvent[]>(botId ? `/events/recent?bot_id=${encodeURIComponent(botId)}` : '/events/recent'),
   eventStatus: (botId: string) => request<EventStatusResponse>(`/events/status?bot_id=${encodeURIComponent(botId)}`),
+  groupVerificationStatus: (botId: string) => request<GroupVerificationStatus>(`/group-verification/status?bot_id=${encodeURIComponent(botId)}`),
+  updateGroupVerificationSettings: (botId: string, payload: { enabled: boolean; min_operand: number; max_operand: number }) =>
+    request<GroupVerificationStatus>(`/group-verification/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  verifyGroupMember: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST' }),
+  resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),
+  closeGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' }),
 }
