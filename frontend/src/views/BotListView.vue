@@ -72,7 +72,9 @@ onMounted(() => store.load())
     </div>
     <div v-else class="bots-grid">
       <article v-for="bot in store.bots" :key="bot.id" class="bot-card" @click="router.push(`/bots/${bot.id}`)">
-        <div class="avatar">BOT</div>
+        <div class="avatar" :style="bot.avatar_url ? { backgroundImage: `url(${bot.avatar_url})`, backgroundSize: 'cover' } : undefined">
+          <span v-if="!bot.avatar_url">BOT</span>
+        </div>
         <div class="bot-main">
           <div class="name-row"><strong>{{ bot.name }}</strong><span>{{ bot.has_secret ? '已接入' : '缺少 Key' }}</span></div>
           <p class="mono">AppID {{ bot.app_id }}</p>

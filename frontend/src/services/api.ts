@@ -9,6 +9,7 @@ export interface Bot {
   app_id: string
   has_secret: boolean
   avatar_seed: number
+  avatar_url?: string
   updated_at: string
   callback_url: string
   event_scopes: string[]
@@ -80,6 +81,7 @@ export const api = {
   getBot: (id: string) => request<Bot>(`/bots/${encodeURIComponent(id)}`),
   createBot: (payload: BotCreatePayload) => request<Bot>('/bots', { method: 'POST', body: JSON.stringify(payload) }),
   updateBot: (id: string, payload: BotUpdatePayload) => request<Bot>(`/bots/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  syncBotProfile: (id: string) => request<Bot>(`/bots/${encodeURIComponent(id)}/sync-profile`, { method: 'POST' }),
   deleteBot: (id: string) => request<{ ok: boolean }>(`/bots/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   credentialStatus: (botId?: string) => request<CredentialStatus>(botId ? `/qqbot/credential-status?bot_id=${encodeURIComponent(botId)}` : '/qqbot/credential-status'),
   openApi: (payload: { bot_id: string; method: string; path: string; query?: Record<string, string>; body?: unknown }) =>

@@ -7,17 +7,36 @@ from app.services.qqbot_client import client_manager
 router = APIRouter(prefix="/bots", tags=["bots"])
 
 
+async def _sync_profile(bot_id: str) -> BotPublic:
+    client = await client_manager.get(bot_id)
+    me = await client.fetch_me()
+    name = str(me.get("username") or "").strip()
+    avatar_url = str(me.get("avatar") or "").strip()
+    bot = bot_repository.set_profile(bot_id, name=name or None, avatar_url=avatar_url)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="机器人不存在")
+    return bot
+
+
 @router.get("", response_model=list[BotPublic])
 def list_bots() -> list[BotPublic]:
     return bot_repository.list()
 
 
 @router.post("", response_model=BotPublic, status_code=201)
-def create_bot(payload: BotCreate) -> BotPublic:
+async def create_bot(payload: BotCreate) -> BotPublic:
     try:
-        return bot_repository.create(payload)
+        bot = bot_repository.create(payload)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    try:
+        return await _sync_profile(bot.id)
+    except HTTPException as exc:
+        # Roll back invalid credentials so the list stays clean.
+        bot_repository.delete(bot.id)
+        client_manager.drop(bot.id)
+        raise HTTPException(status_code=exc.status_code, detail=f"凭证校验失败：{exc.detail}") from exc
 
 
 @router.get("/{bot_id}", response_model=BotPublic)
@@ -29,7 +48,7 @@ def get_bot(bot_id: str) -> BotPublic:
 
 
 @router.patch("/{bot_id}", response_model=BotPublic)
-def update_bot(bot_id: str, update: BotUpdate) -> BotPublic:
+async def update_bot(bot_id: str, update: BotUpdate) -> BotPublic:
     try:
         bot = bot_repository.update(bot_id, update)
     except ValueError as exc:
@@ -38,7 +57,15 @@ def update_bot(bot_id: str, update: BotUpdate) -> BotPublic:
         raise HTTPException(status_code=404, detail="机器人不存在")
     if update.client_secret is not None or update.app_id is not None:
         client_manager.drop(bot_id)
+        return await _sync_profile(bot_id)
     return bot
+
+
+@router.post("/{bot_id}/sync-profile", response_model=BotPublic)
+async def sync_bot_profile(bot_id: str) -> BotPublic:
+    if bot_repository.get(bot_id) is None:
+        raise HTTPException(status_code=404, detail="机器人不存在")
+    return await _sync_profile(bot_id)
 
 
 @router.delete("/{bot_id}")

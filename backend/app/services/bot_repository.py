@@ -56,6 +56,7 @@ class BotRepository:
             app_id=app_id,
             has_secret=bool(secret),
             avatar_seed=int(record.get("avatar_seed") or 0),
+            avatar_url=str(record.get("avatar_url") or ""),
             updated_at=str(record.get("updated_at") or date.today().isoformat()),
             callback_url=str(record.get("callback_url") or ""),
             event_scopes=list(record.get("event_scopes") or []),
@@ -118,6 +119,7 @@ class BotRepository:
                 "app_id": payload.app_id,
                 "client_secret": payload.client_secret,
                 "avatar_seed": abs(hash(payload.app_id)) % 6,
+                "avatar_url": "",
                 "updated_at": date.today().isoformat(),
                 "callback_url": payload.callback_url,
                 "event_scopes": [],
@@ -166,6 +168,28 @@ class BotRepository:
                 return None
             if record.get("status") != status:
                 record["status"] = status
+                record["updated_at"] = date.today().isoformat()
+                self._bots[bot_id] = record
+                self._persist()
+            return self._to_public(record)
+
+    def set_profile(self, bot_id: str, *, name: str | None = None, avatar_url: str | None = None) -> BotPublic | None:
+        with self._lock:
+            record = self._bots.get(bot_id)
+            if record is None:
+                return None
+            changed = False
+            if name is not None:
+                cleaned = name.strip()
+                if cleaned and record.get("name") != cleaned:
+                    record["name"] = cleaned
+                    changed = True
+            if avatar_url is not None:
+                cleaned_avatar = avatar_url.strip()
+                if record.get("avatar_url") != cleaned_avatar:
+                    record["avatar_url"] = cleaned_avatar
+                    changed = True
+            if changed:
                 record["updated_at"] = date.today().isoformat()
                 self._bots[bot_id] = record
                 self._persist()

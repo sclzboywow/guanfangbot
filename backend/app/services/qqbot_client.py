@@ -88,6 +88,19 @@ class QQBotClient:
         }
         return {"status_code": response.status_code, "data": data, "headers": safe_headers}
 
+    async def fetch_me(self) -> dict[str, Any]:
+        """Fetch current bot profile via GET /users/@me."""
+        result = await self.request("GET", "/users/@me", None, None)
+        if result["status_code"] >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"获取机器人资料失败：{result['data']}",
+            )
+        data = result["data"]
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=502, detail="获取机器人资料失败：响应格式无效")
+        return data
+
 
 class QQBotClientManager:
     def __init__(self) -> None:

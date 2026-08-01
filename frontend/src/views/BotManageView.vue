@@ -51,6 +51,19 @@ async function save() {
   finally { busy.value = false }
 }
 
+async function syncProfile() {
+  if (!bot.value) return
+  busy.value = true; error.value = ''; message.value = ''
+  try {
+    bot.value = await api.syncBotProfile(bot.value.id)
+    message.value = '已同步机器人名称'
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '同步失败'
+  } finally {
+    busy.value = false
+  }
+}
+
 async function removeBot() {
   if (!bot.value || !confirm(`确认删除 AppID ${bot.value.app_id}？`)) return
   await api.deleteBot(bot.value.id)
@@ -73,7 +86,10 @@ onMounted(load)
     <template v-else>
       <div class="page-head">
         <div><h1 class="page-title">{{ bot.name }}</h1><p class="page-sub mono">AppID {{ bot.app_id }}</p></div>
-        <span class="status-pill" :class="credential?.configured ? 'online' : 'warn'">{{ credential?.configured ? (credential.token_cached ? 'Token 已缓存' : '凭证已配置') : '待配置' }}</span>
+        <div class="page-actions">
+          <button class="btn" type="button" :disabled="busy" @click="syncProfile">同步名称</button>
+          <span class="status-pill" :class="credential?.configured ? 'online' : 'warn'">{{ credential?.configured ? (credential.token_cached ? 'Token 已缓存' : '凭证已配置') : '待配置' }}</span>
+        </div>
       </div>
 
       <div class="layout">

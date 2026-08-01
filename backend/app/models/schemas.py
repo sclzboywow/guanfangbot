@@ -13,6 +13,7 @@ class BotPublic(BaseModel):
     app_id: str
     has_secret: bool = False
     avatar_seed: int = 0
+    avatar_url: str = ""
     updated_at: str
     callback_url: str = ""
     event_scopes: list[str] = Field(default_factory=list)
