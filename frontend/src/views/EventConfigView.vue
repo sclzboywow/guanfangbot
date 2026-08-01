@@ -144,7 +144,7 @@ onMounted(async () => {
         <p class="page-sub">完整维护 QQ 管理端事件清单，并记录回调验证和真实事件接收状态。</p>
       </div>
       <div class="page-actions">
-        <button class="btn" :disabled="detecting || !botId" @click="refreshDetection">
+        <button class="btn" :disabled="detecting || !botId" @click="refreshDetection()">
           {{ detecting ? '检测中…' : '刷新检测' }}
         </button>
         <button class="btn primary" :disabled="saving || !botId" @click="save">
@@ -252,7 +252,7 @@ onMounted(async () => {
         <aside class="card panel recent">
           <div class="recent-head">
             <div><h2 class="section-title">最近回调</h2><p class="section-sub">当前进程最近 100 条</p></div>
-            <button class="btn" :disabled="detecting" @click="refreshDetection">刷新</button>
+            <button class="btn" :disabled="detecting" @click="refreshDetection()">刷新</button>
           </div>
           <div v-if="!events.length" class="empty-events">尚未收到事件。</div>
           <div v-for="event in events" :key="event.id" class="event-row">
