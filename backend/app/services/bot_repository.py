@@ -39,21 +39,35 @@ class BotRepository:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._path)
 
+    @staticmethod
+    def _display_name(app_id: str) -> str:
+        suffix = app_id[-6:] if len(app_id) > 6 else app_id
+        return f"机器人 {suffix}"
+
     def _to_public(self, record: dict[str, Any]) -> BotPublic:
         secret = str(record.get("client_secret") or "")
+        app_id = str(record.get("app_id") or "")
         return BotPublic(
             id=str(record["id"]),
-            name=str(record.get("name") or ""),
+            name=str(record.get("name") or self._display_name(app_id)),
             description=str(record.get("description") or ""),
             status=record.get("status") or "created",
             role=record.get("role") or "admin",
-            app_id=str(record.get("app_id") or ""),
+            app_id=app_id,
             has_secret=bool(secret),
             avatar_seed=int(record.get("avatar_seed") or 0),
             updated_at=str(record.get("updated_at") or date.today().isoformat()),
             callback_url=str(record.get("callback_url") or ""),
             event_scopes=list(record.get("event_scopes") or []),
         )
+
+    def _find_by_app_id(self, app_id: str, *, exclude_bot_id: str | None = None) -> str | None:
+        for bot_id, record in self._bots.items():
+            if bot_id == exclude_bot_id:
+                continue
+            if str(record.get("app_id") or "") == app_id:
+                return bot_id
+        return None
 
     def list(self) -> list[BotPublic]:
         with self._lock:
@@ -81,29 +95,32 @@ class BotRepository:
         if not app_id:
             return None
         with self._lock:
-            for bot_id, record in self._bots.items():
-                if str(record.get("app_id") or "") == app_id:
-                    secret = str(record.get("client_secret") or "")
-                    if not secret:
-                        return None
-                    return bot_id, app_id, secret
-        return None
+            bot_id = self._find_by_app_id(app_id)
+            if bot_id is None:
+                return None
+            record = self._bots[bot_id]
+            secret = str(record.get("client_secret") or "")
+            if not secret:
+                return None
+            return bot_id, app_id, secret
 
     def create(self, payload: BotCreate) -> BotPublic:
         with self._lock:
+            if self._find_by_app_id(payload.app_id) is not None:
+                raise ValueError("该 AppID 已经存在")
             bot_id = f"bot-{uuid.uuid4().hex[:10]}"
             record = {
                 "id": bot_id,
-                "name": payload.name.strip(),
-                "description": payload.description.strip(),
-                "status": payload.status,
+                "name": self._display_name(payload.app_id),
+                "description": "",
+                "status": "created",
                 "role": "admin",
-                "app_id": payload.app_id.strip(),
-                "client_secret": payload.client_secret.strip(),
+                "app_id": payload.app_id,
+                "client_secret": payload.client_secret,
                 "avatar_seed": abs(hash(payload.app_id)) % 6,
                 "updated_at": date.today().isoformat(),
-                "callback_url": payload.callback_url.strip(),
-                "event_scopes": list(payload.event_scopes),
+                "callback_url": payload.callback_url,
+                "event_scopes": [],
             }
             self._bots[bot_id] = record
             self._persist()
@@ -115,14 +132,20 @@ class BotRepository:
             if record is None:
                 return None
             data = update.model_dump(exclude_none=True)
+            new_app_id = data.get("app_id")
+            if new_app_id and self._find_by_app_id(new_app_id, exclude_bot_id=bot_id) is not None:
+                raise ValueError("该 AppID 已经存在")
+
             secret = data.pop("client_secret", None)
             for key, value in data.items():
-                if isinstance(value, str):
-                    record[key] = value.strip()
-                else:
-                    record[key] = value
+                record[key] = value.strip() if isinstance(value, str) else value
+            if new_app_id:
+                record["name"] = self._display_name(new_app_id)
+                record["avatar_seed"] = abs(hash(new_app_id)) % 6
+                record["status"] = "created"
             if secret is not None:
                 record["client_secret"] = secret.strip()
+                record["status"] = "created"
             record["updated_at"] = date.today().isoformat()
             self._bots[bot_id] = record
             self._persist()

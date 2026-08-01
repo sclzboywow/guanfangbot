@@ -1,80 +1,76 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Bot } from '@/services/api'
-import AppIcon from '@/components/AppIcon.vue'
+import { api, type Bot, type BotEvent, type CredentialStatus } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
 const bot = ref<Bot | null>(null)
-const loading = ref(true)
-const saving = ref(false)
-const deleting = ref(false)
-const error = ref('')
-const name = ref('')
-const description = ref('')
+const credential = ref<CredentialStatus | null>(null)
+const events = ref<BotEvent[]>([])
 const appId = ref('')
-const clientSecret = ref('')
-const status = ref<Bot['status']>('created')
-const copied = ref('')
-const botId = computed(() => String(route.params.id))
+const key = ref('')
+const callbackUrl = ref('')
+const loading = ref(true)
+const busy = ref(false)
+const message = ref('')
+const error = ref('')
+const id = computed(() => String(route.params.id))
+const suggestedCallback = computed(() => appId.value.trim()
+  ? `${window.location.origin}/api/events/callback/${encodeURIComponent(appId.value.trim())}` : '')
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    bot.value = await api.getBot(botId.value)
-    name.value = bot.value.name
-    description.value = bot.value.description
+    bot.value = await api.getBot(id.value)
     appId.value = bot.value.app_id
-    status.value = bot.value.status
-    clientSecret.value = ''
+    callbackUrl.value = bot.value.callback_url
+    key.value = ''
+    ;[credential.value, events.value] = await Promise.all([
+      api.credentialStatus(id.value), api.recentEvents(id.value),
+    ])
   } catch (e) {
     error.value = e instanceof Error ? e.message : '加载失败'
-  } finally {
-    loading.value = false
-  }
+  } finally { loading.value = false }
 }
 
 async function save() {
   if (!bot.value) return
-  saving.value = true
-  error.value = ''
+  busy.value = true; error.value = ''; message.value = ''
   try {
     const payload: Parameters<typeof api.updateBot>[1] = {
-      name: name.value.trim(),
-      description: description.value.trim(),
-      app_id: appId.value.trim(),
-      status: status.value,
+      app_id: appId.value.trim(), callback_url: callbackUrl.value.trim(),
     }
-    if (clientSecret.value.trim()) payload.client_secret = clientSecret.value.trim()
+    if (key.value.trim()) payload.client_secret = key.value.trim()
     bot.value = await api.updateBot(bot.value.id, payload)
-    clientSecret.value = ''
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '保存失败'
-  } finally {
-    saving.value = false
-  }
+    key.value = ''
+    credential.value = await api.credentialStatus(bot.value.id)
+    message.value = '接入配置已保存'
+  } catch (e) { error.value = e instanceof Error ? e.message : '保存失败' }
+  finally { busy.value = false }
+}
+
+async function refreshToken() {
+  if (!bot.value) return
+  busy.value = true; error.value = ''
+  try {
+    const result = await api.refreshToken(bot.value.id)
+    credential.value = await api.credentialStatus(bot.value.id)
+    message.value = `Token 已刷新，有效期约 ${result.expires_in} 秒`
+  } catch (e) { error.value = e instanceof Error ? e.message : '刷新失败' }
+  finally { busy.value = false }
 }
 
 async function removeBot() {
-  if (!bot.value) return
-  if (!confirm(`确认删除机器人「${bot.value.name}」？此操作不可恢复。`)) return
-  deleting.value = true
-  try {
-    await api.deleteBot(bot.value.id)
-    router.push('/bots')
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '删除失败'
-  } finally {
-    deleting.value = false
-  }
+  if (!bot.value || !confirm(`确认删除 AppID ${bot.value.app_id}？`)) return
+  await api.deleteBot(bot.value.id)
+  router.push('/bots')
 }
 
-async function copy(text: string, label: string) {
+async function copy(text: string) {
   await navigator.clipboard.writeText(text)
-  copied.value = label
-  setTimeout(() => { copied.value = '' }, 1200)
+  message.value = '已复制'
 }
 
 onMounted(load)
@@ -82,134 +78,50 @@ onMounted(load)
 
 <template>
   <section class="page manage-page">
-    <button class="back" type="button" @click="router.push('/bots')">← 返回机器人列表</button>
-    <div v-if="loading" class="card loading">正在加载…</div>
-    <div v-else-if="error && !bot" class="card loading error">{{ error }}</div>
-    <template v-else-if="bot">
-      <div class="page-head manage-head">
-        <div class="title-line">
-          <div class="title-avatar">BOT</div>
-          <div>
-            <h1 class="page-title">{{ bot.name }}</h1>
-            <p class="page-sub mono">AppID {{ bot.app_id || '—' }}</p>
+    <button class="back" @click="router.push('/bots')">← 返回机器人列表</button>
+    <div v-if="loading" class="card state">正在加载…</div>
+    <div v-else-if="!bot" class="card state error">{{ error || '机器人不存在' }}</div>
+    <template v-else>
+      <div class="page-head">
+        <div><h1 class="page-title">{{ bot.name }}</h1><p class="page-sub mono">AppID {{ bot.app_id }}</p></div>
+        <span class="status-pill" :class="credential?.configured ? 'online' : 'warn'">{{ credential?.configured ? (credential.token_cached ? 'Token 已缓存' : '凭证已配置') : '待配置' }}</span>
+      </div>
+
+      <div class="layout">
+        <section class="card panel">
+          <h2 class="section-title">接入配置</h2>
+          <p class="section-sub">这里只维护 AppID、AppSecret / Key 与回调地址。</p>
+          <div class="fields">
+            <div class="field"><label>AppID</label><input v-model="appId" class="input mono" /></div>
+            <div class="field"><label>AppSecret / Key</label><input v-model="key" class="input mono" type="password" :placeholder="bot.has_secret ? '已保存，留空不修改' : '请输入 Key'" /></div>
+            <div class="field"><label>回调地址</label><div class="input-row"><input v-model="callbackUrl" class="input mono" /><button class="btn" @click="copy(callbackUrl)">复制</button></div><small>推荐：{{ suggestedCallback }}</small></div>
           </div>
-          <span class="status-pill" :class="bot.status">{{ bot.status === 'online' ? '在线' : bot.status === 'created' ? '待接入' : '离线' }}</span>
-        </div>
-        <div class="page-actions">
-          <button class="btn danger" type="button" :disabled="deleting" @click="removeBot">{{ deleting ? '删除中…' : '删除' }}</button>
-          <button class="btn primary" type="button" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存修改' }}</button>
-        </div>
-      </div>
+          <div class="actions"><button class="btn" @click="callbackUrl = suggestedCallback">使用推荐地址</button><button class="btn primary" :disabled="busy || !appId.trim() || !callbackUrl.trim()" @click="save">{{ busy ? '处理中…' : '保存配置' }}</button></div>
+        </section>
 
-      <div class="manage-layout">
-        <aside class="manage-nav card">
-          <a href="#basic">基本信息</a>
-          <a href="#credentials">开发凭证</a>
-          <a href="#events">事件订阅</a>
-          <a href="#security">安全说明</a>
+        <aside class="side">
+          <section class="card panel">
+            <h2 class="section-title">开发状态</h2>
+            <div class="kv"><span>凭证</span><b>{{ credential?.configured ? '可用' : '未配置' }}</b></div>
+            <div class="kv"><span>Token</span><b>{{ credential?.token_cached ? '已缓存' : '未缓存' }}</b></div>
+            <div class="kv"><span>最近事件</span><b>{{ events.length }}</b></div>
+            <button class="btn full" :disabled="busy || !bot.has_secret" @click="refreshToken">刷新 Access Token</button>
+          </section>
+          <section class="card panel tools">
+            <h2 class="section-title">开发工具</h2>
+            <RouterLink :to="`/events?bot=${bot.id}`">事件与回调 <b>→</b></RouterLink>
+            <RouterLink :to="`/api-console?bot=${bot.id}`">OpenAPI 调试 <b>→</b></RouterLink>
+            <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noopener noreferrer">官方文档 <b>↗</b></a>
+          </section>
         </aside>
-        <div class="manage-body">
-          <section id="basic" class="section-card card">
-            <div class="section-head"><div><h2 class="section-title">基本信息</h2><p class="section-sub">名称、介绍与状态会保存在服务端，可供所有使用者在前台维护。</p></div></div>
-            <div class="form-grid">
-              <div class="field"><label>机器人名称</label><input v-model="name" class="input" maxlength="32" /></div>
-              <div class="field">
-                <label>状态</label>
-                <select v-model="status" class="select">
-                  <option value="created">待接入</option>
-                  <option value="online">在线</option>
-                  <option value="offline">离线</option>
-                </select>
-              </div>
-              <div class="field full"><label>机器人介绍</label><textarea v-model="description" class="textarea normal" maxlength="120"></textarea></div>
-            </div>
-          </section>
-
-          <section id="credentials" class="section-card card">
-            <div class="section-head">
-              <div>
-                <h2 class="section-title">开发凭证</h2>
-                <p class="section-sub">在前台填写并保存。AppSecret 仅服务端存储，接口只返回是否已配置。</p>
-              </div>
-              <span class="secure-tag">{{ bot.has_secret ? '已配置密钥' : '尚未配置密钥' }}</span>
-            </div>
-            <div class="form-grid">
-              <div class="field"><label>AppID</label><input v-model="appId" class="input mono" placeholder="QQ 开放平台 AppID" /></div>
-              <div class="field">
-                <label>AppSecret</label>
-                <input v-model="clientSecret" class="input mono" type="password" :placeholder="bot.has_secret ? '已保存，留空表示不修改' : '请输入 AppSecret'" />
-              </div>
-            </div>
-            <div class="setting-row">
-              <div><strong>当前 AppID</strong><span>可用于复制到开放平台或文档</span></div>
-              <code>{{ bot.app_id || '—' }}</code>
-              <button class="icon-btn" type="button" :disabled="!bot.app_id" @click="copy(bot.app_id, 'AppID')"><AppIcon name="copy" :size="15" /></button>
-            </div>
-            <div v-if="copied" class="toast">已复制 {{ copied }}</div>
-          </section>
-
-          <section id="events" class="section-card card">
-            <div class="section-head">
-              <div><h2 class="section-title">事件订阅</h2><p class="section-sub">回调地址与订阅范围可在事件页按机器人单独配置。</p></div>
-              <RouterLink :to="`/events?bot=${bot.id}`" class="btn">打开配置</RouterLink>
-            </div>
-            <div class="event-summary">
-              <span class="event-icon">↯</span>
-              <div>
-                <strong>{{ bot.event_scopes.length ? `已选 ${bot.event_scopes.length} 类事件` : '尚未选择事件订阅' }}</strong>
-                <p>{{ bot.callback_url || 'https://bot.yzdoc.cn/api/events/callback' }}</p>
-              </div>
-            </div>
-          </section>
-
-          <section id="security" class="section-card card">
-            <div class="section-head"><div><h2 class="section-title">安全说明</h2><p class="section-sub">开放给其他用户前建议完成登录鉴权与审计。</p></div></div>
-            <label class="check-row"><input type="checkbox" checked disabled /><span><strong>密钥仅服务端保存</strong><small>前端不会收到 AppSecret 明文与 Access Token。</small></span></label>
-            <label class="check-row"><input type="checkbox" /><span><strong>管理台登录鉴权</strong><small>当前尚未实现，正式对外开放前必须接入。</small></span></label>
-            <label class="check-row"><input type="checkbox" checked disabled /><span><strong>配置持久化</strong><small>机器人配置写入服务端 data/bots.json，重启后保留。</small></span></label>
-          </section>
-          <p v-if="error" class="inline-error">{{ error }}</p>
-        </div>
       </div>
+
+      <section class="card danger-zone"><div><strong>删除本地配置</strong><span>不会删除 QQ 开放平台中的机器人。</span></div><button class="btn danger" @click="removeBot">删除</button></section>
+      <p v-if="message" class="notice ok">{{ message }}</p><p v-if="error" class="notice error">{{ error }}</p>
     </template>
   </section>
 </template>
 
 <style scoped>
-.manage-page { max-width: 1120px; }
-.back { margin: 0 0 20px; padding: 0; border: 0; background: transparent; color: var(--ink-3); font-size: 13px; }
-.back:hover { color: var(--accent); }
-.manage-head { align-items: center; }
-.title-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.title-avatar { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: linear-gradient(135deg,#c2e6ff,#0099ff); color: white; font-size: 11px; font-weight: 850; }
-.manage-layout { display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 22px; align-items: start; }
-.manage-nav { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 4px; padding: 9px; }
-.manage-nav a { padding: 12px 13px; border-radius: 12px; color: var(--ink-2); font-weight: 650; }
-.manage-nav a:hover { background: var(--accent-soft); color: var(--accent); }
-.manage-body { display: flex; flex-direction: column; gap: 18px; }
-.section-card { position: relative; padding: 24px; scroll-margin-top: 20px; }
-.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.field.full { grid-column: 1 / -1; }
-.textarea.normal { font-family: var(--font-sans); min-height: 100px; }
-.setting-row { display: grid; grid-template-columns: minmax(170px,1fr) minmax(180px,1fr) auto; gap: 12px; align-items: center; padding: 15px 0; border-top: 1px solid var(--line); margin-top: 8px; }
-.setting-row strong, .setting-row span { display: block; }
-.setting-row span { margin-top: 3px; color: var(--ink-4); font-size: 11.5px; }
-.setting-row code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 11px; border-radius: 9px; background: var(--bg-sunken); color: var(--ink-2); }
-.icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--ink-3); }
-.icon-btn:hover { color: var(--accent); border-color: var(--accent-border); }
-.secure-tag { padding: 5px 9px; border-radius: 999px; background: rgba(52,199,89,.1); color: #238541; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.event-summary { display: flex; align-items: flex-start; gap: 13px; padding: 16px; border: 1px solid var(--accent-border); border-radius: 15px; background: var(--accent-soft); }
-.event-summary p { margin: 5px 0 0; color: var(--ink-3); font-size: 12.5px; line-height: 1.55; word-break: break-all; }
-.event-icon { font-size: 22px; color: var(--accent); }
-.check-row { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
-.check-row input { width: 17px; height: 17px; accent-color: var(--accent); }
-.check-row strong, .check-row small { display: block; }
-.check-row small { margin-top: 4px; color: var(--ink-4); line-height: 1.45; }
-.toast { position: absolute; top: 18px; right: 18px; padding: 8px 12px; border-radius: 10px; background: rgba(29,29,31,.9); color: white; font-size: 12px; }
-.loading { padding: 48px; text-align: center; }
-.error, .inline-error { color: var(--danger); }
-.btn.danger { background: rgba(255,59,48,.1); color: var(--danger); }
-@media (max-width: 900px) { .manage-layout { grid-template-columns: 1fr; } .manage-nav { position: static; flex-direction: row; overflow-x: auto; } }
-@media (max-width: 620px) { .form-grid { grid-template-columns: 1fr; } .setting-row { grid-template-columns: 1fr auto; } .setting-row > div { grid-column: 1/-1; } }
+.manage-page{max-width:1080px}.back{margin:0 0 18px;padding:0;border:0;background:none;color:var(--ink-3)}.state{padding:40px;text-align:center}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}.panel{padding:22px}.fields{display:flex;flex-direction:column;gap:15px;margin-top:20px}.input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.field small{color:var(--ink-4);word-break:break-all}.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.side{display:flex;flex-direction:column;gap:18px}.kv{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);color:var(--ink-3)}.kv b{color:var(--ink)}.full{width:100%;margin-top:14px}.tools{display:flex;flex-direction:column;gap:8px}.tools h2{margin-bottom:6px}.tools a{display:flex;justify-content:space-between;padding:12px;border-radius:11px;background:var(--bg-sunken);font-weight:650}.tools a:hover{background:var(--accent-soft);color:var(--accent)}.danger-zone{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:18px;padding:18px 22px}.danger-zone strong,.danger-zone span{display:block}.danger-zone span{margin-top:4px;color:var(--ink-4);font-size:12px}.notice{margin-top:12px}.ok{color:#238541}.error{color:var(--danger)}@media(max-width:840px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:1fr 1fr}}@media(max-width:620px){.side{display:flex}.danger-zone{align-items:flex-start;flex-direction:column}}
 </style>

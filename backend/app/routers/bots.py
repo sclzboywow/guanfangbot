@@ -14,7 +14,10 @@ def list_bots() -> list[BotPublic]:
 
 @router.post("", response_model=BotPublic, status_code=201)
 def create_bot(payload: BotCreate) -> BotPublic:
-    return bot_repository.create(payload)
+    try:
+        return bot_repository.create(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{bot_id}", response_model=BotPublic)
@@ -27,7 +30,10 @@ def get_bot(bot_id: str) -> BotPublic:
 
 @router.patch("/{bot_id}", response_model=BotPublic)
 def update_bot(bot_id: str, update: BotUpdate) -> BotPublic:
-    bot = bot_repository.update(bot_id, update)
+    try:
+        bot = bot_repository.update(bot_id, update)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if bot is None:
         raise HTTPException(status_code=404, detail="机器人不存在")
     if update.client_secret is not None or update.app_id is not None:

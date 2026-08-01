@@ -1,110 +1,79 @@
-# QQ 官方机器人管理台起步项目
+# QQ 官方机器人开发台
 
-这是一个基于 QQ 机器人管理后台视觉风格制作的独立开发项目，包含：
+这是一个面向**自有 QQ 官方机器人开发**的轻量管理台，不做机器人市场、账号运营或多租户平台。
 
-- Vue 3 + Vite + TypeScript 前端
-- FastAPI 后端
-- 机器人列表、详情管理、事件配置、开发者测试、API 调试台
-- QQ Bot `access_token` 服务端缓存
-- QQ OpenAPI 服务端代理（限制到官方 API 域名，避免把密钥暴露到浏览器）
-- 默认模拟数据，可在没有机器人密钥时直接运行页面
+## 核心流程
 
-> 该项目不是 QQ 官方产品，也不包含任何真实账号、头像、邮箱、AppSecret 或 Access Token。
+新增机器人时只填写三项：
 
-## 目录
+1. `AppID`
+2. `AppSecret / Key`
+3. 公网 `Callback URL`
 
-```text
-qqbot-admin-starter/
-├─ frontend/              Vue 管理台
-├─ backend/               FastAPI 服务端
-├─ docker-compose.yml
-└─ README.md
-```
+添加后进入开发工具：
 
-## 无需安装的页面预览
+- Access Token 状态与手动刷新
+- QQ OpenAPI 请求调试
+- 事件订阅记录
+- HTTP 回调验证、签名校验与事件日志
+- 多机器人独立凭证和 Token 缓存
 
-直接双击打开 `standalone/index.html`，即可查看和操作仿制管理台。该版本不会发送真实 API 请求。
+## 技术栈
 
-## 本地启动
+- 前端：Vue 3、TypeScript、Vite
+- 后端：FastAPI
+- 部署：Docker Compose、Nginx
+- 配置存储：Docker 数据卷中的 `bots.json`
 
-### 1. 后端
+## 启动
 
 ```bash
-cd backend
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --reload --port 8000
+cp backend/.env.example backend/.env
+docker compose up -d --build
 ```
 
-Windows PowerShell 可使用：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-### 2. 前端
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-打开 `http://localhost:5173`。
-
-## 配置真实机器人
-
-编辑 `backend/.env`：
-
-```env
-QQBOT_APP_ID=你的AppID
-QQBOT_CLIENT_SECRET=你的AppSecret
-QQBOT_API_BASE=https://api.bot.qq.com
-QQBOT_TOKEN_URL=https://api.bot.qq.com/app/getAppAccessToken
-```
-
-密钥只能放在后端 `.env`，不要写入 Vue 文件、浏览器 LocalStorage 或提交到 Git。
-
-## 已实现接口
-
-- `GET /api/health`：服务健康状态
-- `GET /api/bots`：机器人列表（默认模拟数据）
-- `GET /api/bots/{id}`：机器人详情
-- `PATCH /api/bots/{id}`：修改本地展示信息
-- `GET /api/qqbot/credential-status`：检查后端是否配置凭证
-- `POST /api/qqbot/token/refresh`：刷新 Access Token
-- `POST /api/qqbot/openapi`：调用 QQ 官方 OpenAPI
-- `GET /api/events/recent`：读取最近事件
-- `POST /api/events/callback`：预留 HTTP 事件回调入口
-
-## API 调试台请求示例
-
-在页面“API 调试台”中填写：
+默认访问：
 
 ```text
-GET /users/@me
+http://服务器IP:5173
 ```
 
-后端会自动添加：
+生产环境建议由宿主机 Nginx 或云负载均衡将域名 HTTPS 转发到 `127.0.0.1:5173`。
+
+## 多机器人回调
+
+推荐每个机器人使用带 AppID 的独立地址：
 
 ```text
-Authorization: QQBot ACCESS_TOKEN
+https://你的域名/api/events/callback/{AppID}
 ```
 
-## 安全说明
+兼容入口仍保留：
 
-- OpenAPI 代理只接受相对路径，不能指定任意域名。
-- Access Token 只在后端内存中缓存。
-- API 调试台默认拒绝包含 `authorization`、`cookie`、`clientSecret` 等敏感自定义头。
-- 当前事件回调接口仅用于开发起步；正式上线前应按官方文档加入签名校验、重放防护、持久化和权限控制。
+```text
+https://你的域名/api/events/callback
+```
 
-## 后续推荐开发顺序
+统一入口仅建议用于单机器人，或由请求头提供 AppID 的场景。
 
-1. 接入真实机器人基本信息与状态。
-2. 按实际场景封装单聊、群聊、频道消息函数。
-3. 完成事件订阅校验和事件分发器。
-4. 增加数据库，保存机器人配置、事件日志和操作审计。
-5. 增加管理台登录与角色权限，禁止公开暴露调试台。
+## API
+
+- `GET /api/bots`
+- `POST /api/bots`
+- `GET /api/bots/{bot_id}`
+- `PATCH /api/bots/{bot_id}`
+- `DELETE /api/bots/{bot_id}`
+- `GET /api/qqbot/credential-status?bot_id=...`
+- `POST /api/qqbot/token/refresh?bot_id=...`
+- `POST /api/qqbot/openapi`
+- `GET /api/events/recent?bot_id=...`
+- `POST /api/events/callback/{app_id}`
+
+## 安全
+
+- Key 和 Access Token 不返回前端。
+- OpenAPI 调用由后端代理，浏览器只传机器人内部 ID。
+- `backend/data/bots.json` 不应提交到 Git。
+- 当前文件存储适合个人开发台；正式多人使用前应增加登录、权限、数据库加密和审计。
+
+QQ 官方要求在服务端使用 `AppID + ClientSecret` 获取 Access Token，并通过 `Authorization: QQBot ACCESS_TOKEN` 调用 OpenAPI。不要把 Access Token 放到浏览器端。
