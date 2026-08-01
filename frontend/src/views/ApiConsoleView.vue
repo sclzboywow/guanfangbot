@@ -58,17 +58,6 @@ async function run() {
   }
 }
 
-async function refresh() {
-  if (!botId.value) return
-  try {
-    const response = await api.refreshToken(botId.value)
-    await loadCredential()
-    result.value = JSON.stringify({ ok: true, message: 'Access Token 已刷新', expires_in: response.expires_in }, null, 2)
-  } catch (e) {
-    result.value = JSON.stringify({ error: e instanceof Error ? e.message : '刷新失败' }, null, 2)
-  }
-}
-
 watch(botId, () => { loadCredential() })
 onMounted(async () => {
   try { await loadBots(); await loadCredential() }
@@ -81,7 +70,7 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1 class="page-title">OpenAPI 调试</h1>
-        <p class="page-sub">使用选中机器人的 Access Token 调用 QQ 官方 API，Key 不会进入浏览器。</p>
+        <p class="page-sub">使用选中机器人的服务端凭证调用 QQ 官方 API，Key 和 Access Token 不会进入浏览器。</p>
       </div>
       <span v-if="credential" class="status-pill" :class="credential.configured ? 'online' : 'warn'">
         {{ credential.configured ? (credential.token_cached ? 'Token 已缓存' : '凭证已配置') : '未配置凭证' }}
@@ -113,7 +102,7 @@ onMounted(async () => {
         </div>
         <div class="field body-field"><label>JSON Body</label><textarea v-model="body" class="textarea" :disabled="['GET','DELETE'].includes(method)"></textarea></div>
         <div class="actions">
-          <button class="btn" :disabled="!botId" @click="refresh">刷新 Access Token</button>
+          <span class="token-hint">Access Token 由后端自动获取、缓存并在到期后重新申请。</span>
           <a href="https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html" target="_blank" rel="noopener noreferrer" class="doc-link">查看官方调用指南 ↗</a>
         </div>
       </section>
@@ -143,7 +132,8 @@ onMounted(async () => {
 .method { font-weight: 750; color: var(--accent); }
 .body-field { margin-top: 18px; }
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
-.doc-link { color: var(--accent); font-size: 11.5px; }
+.token-hint { color: var(--ink-4); font-size: 11.5px; line-height: 1.5; }
+.doc-link { flex: none; color: var(--accent); font-size: 11.5px; }
 .response-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .response-head span { font-size: 10.5px; }
 pre { min-height: 390px; max-height: 680px; overflow: auto; margin: 16px 0 0; padding: 16px; border-radius: 14px; background: #111827; color: #d6e4ff; font: 12px/1.65 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
