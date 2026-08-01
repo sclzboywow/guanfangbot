@@ -52,13 +52,6 @@ async def credential_status(bot_id: str | None = Query(default=None)) -> dict[st
     }
 
 
-@router.post("/token/refresh")
-async def refresh_token(bot_id: str = Query(...)) -> dict[str, object]:
-    client = await client_manager.get(bot_id)
-    _, expires_in = await client.get_access_token(force=True)
-    return {"ok": True, "bot_id": bot_id, "expires_in": expires_in}
-
-
 @router.post("/openapi")
 async def call_openapi(payload: OpenApiRequest) -> dict[str, object]:
     client = await client_manager.get(payload.bot_id)
