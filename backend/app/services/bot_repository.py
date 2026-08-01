@@ -105,6 +105,18 @@ class BotRepository:
                 return None
             return bot_id, app_id, secret
 
+    def get_event_detection(self, bot_id: str) -> tuple[str | None, dict[str, str]] | None:
+        with self._lock:
+            record = self._bots.get(bot_id)
+            if record is None:
+                return None
+            verified_at = str(record.get("callback_verified_at") or "") or None
+            observed = {
+                str(code): str(received_at)
+                for code, received_at in dict(record.get("observed_events") or {}).items()
+            }
+            return verified_at, observed
+
     def create(self, payload: BotCreate) -> BotPublic:
         with self._lock:
             if self._find_by_app_id(payload.app_id) is not None:
@@ -123,6 +135,8 @@ class BotRepository:
                 "updated_at": date.today().isoformat(),
                 "callback_url": payload.callback_url,
                 "event_scopes": [],
+                "callback_verified_at": "",
+                "observed_events": {},
             }
             self._bots[bot_id] = record
             self._persist()
@@ -138,16 +152,23 @@ class BotRepository:
             if new_app_id and self._find_by_app_id(new_app_id, exclude_bot_id=bot_id) is not None:
                 raise ValueError("该 AppID 已经存在")
 
+            app_changed = bool(new_app_id and new_app_id != str(record.get("app_id") or ""))
+            callback_changed = "callback_url" in data and data["callback_url"] != str(record.get("callback_url") or "")
             secret = data.pop("client_secret", None)
+            secret_changed = secret is not None
+
             for key, value in data.items():
                 record[key] = value.strip() if isinstance(value, str) else value
-            if new_app_id:
-                record["name"] = self._display_name(new_app_id)
-                record["avatar_seed"] = abs(hash(new_app_id)) % 6
+            if app_changed:
+                record["name"] = self._display_name(str(new_app_id))
+                record["avatar_seed"] = abs(hash(str(new_app_id))) % 6
                 record["status"] = "created"
+                record["observed_events"] = {}
             if secret is not None:
                 record["client_secret"] = secret.strip()
                 record["status"] = "created"
+            if app_changed or callback_changed or secret_changed:
+                record["callback_verified_at"] = ""
             record["updated_at"] = date.today().isoformat()
             self._bots[bot_id] = record
             self._persist()
@@ -172,6 +193,28 @@ class BotRepository:
                 self._bots[bot_id] = record
                 self._persist()
             return self._to_public(record)
+
+    def mark_callback_verified(self, bot_id: str, verified_at: str) -> None:
+        with self._lock:
+            record = self._bots.get(bot_id)
+            if record is None:
+                return
+            record["callback_verified_at"] = verified_at
+            record["status"] = "online"
+            self._bots[bot_id] = record
+            self._persist()
+
+    def mark_event_observed(self, bot_id: str, event_type: str, received_at: str) -> None:
+        with self._lock:
+            record = self._bots.get(bot_id)
+            if record is None:
+                return
+            observed = dict(record.get("observed_events") or {})
+            observed[event_type] = received_at
+            record["observed_events"] = observed
+            record["status"] = "online"
+            self._bots[bot_id] = record
+            self._persist()
 
     def set_profile(self, bot_id: str, *, name: str | None = None, avatar_url: str | None = None) -> BotPublic | None:
         with self._lock:
