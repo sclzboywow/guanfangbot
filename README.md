@@ -13,11 +13,25 @@
 添加后进入开发工具：
 
 - QQ OpenAPI 请求调试
-- 事件订阅记录
+- 43 项完整事件清单
 - HTTP 回调验证、签名校验与事件日志
+- 回调验证状态与事件实际接收状态
 - 多机器人独立凭证和 Access Token 缓存
 
 Access Token 由后端在调用 OpenAPI 时自动获取、缓存，并在失效后重新申请。管理台不提供手动刷新操作。
+
+## 事件状态检测
+
+事件页完整列出当前 QQ 管理端中的单聊、群、频道和互动事件，共 43 项。
+
+检测状态分为：
+
+- **QQ 已验证**：QQ 平台已向回调地址发送 `op=13` 验证请求，并收到正确签名响应。
+- **已收到**：该事件已经真实推送到本服务，页面显示最后接收时间。
+- **已记录**：该事件已在本平台的开发清单中勾选，但尚未真实收到。
+- **未观察到**：没有收到该事件，不代表 QQ 管理端一定没有开通。
+
+QQ Webhook 当前没有公开接口可读取管理端已经勾选的事件列表，因此本平台不会伪造“已开通”状态。最终订阅项仍需在 QQ 管理端核对；本平台通过回调验证和真实事件到达提供可验证状态。验证时间和事件最后接收时间持久化在 `bots.json`，容器重启后保留。
 
 ## 技术栈
 
@@ -75,6 +89,7 @@ https://你的域名/api/events/callback
 - `DELETE /api/bots/{bot_id}`
 - `GET /api/qqbot/credential-status?bot_id=...`
 - `POST /api/qqbot/openapi`
+- `GET /api/events/status?bot_id=...`
 - `GET /api/events/recent?bot_id=...`
 - `POST /api/events/callback/{app_id}`
 
