@@ -139,6 +139,80 @@ export interface GroupVerificationStatus {
   }
 }
 
+export interface GroupModerationSettings {
+  bot_id: string
+  enabled: boolean
+  detect_mobile: boolean
+  detect_landline: boolean
+  detect_wechat: boolean
+  detect_content_keywords: boolean
+  detect_nickname_keywords: boolean
+  exempt_admins: boolean
+  penalty_minutes: number[]
+  permanent_after: number
+  escalation_cooldown_seconds: number
+  warning_cooldown_seconds: number
+  content_keywords: string[]
+  nickname_keywords: string[]
+  updated_at?: string | null
+}
+
+export interface GroupModerationMember {
+  id: string
+  bot_id: string
+  group_openid: string
+  member_openid: string
+  member_name: string
+  trusted: boolean
+  strike_count: number
+  penalty_level: number
+  blocked_until?: string | null
+  permanent: boolean
+  last_violation_at?: string | null
+  last_rule: string
+  last_match: string
+  last_message_at?: string | null
+  retracted_messages: number
+  warning_count: number
+  last_warning_at?: string | null
+  last_error: string
+  updated_at: string
+}
+
+export interface GroupModerationLog {
+  id: number
+  bot_id: string
+  member_id?: string | null
+  group_openid: string
+  member_openid: string
+  action: string
+  rule: string
+  matched: string
+  message_excerpt: string
+  success: boolean
+  status_code?: number | null
+  detail: string
+  created_at: string
+}
+
+export interface GroupModerationStatus {
+  bot_id: string
+  app_id: string
+  bot_name: string
+  settings: GroupModerationSettings
+  required_events: Array<{ code: string; configured: boolean }>
+  requirements_ready: boolean
+  counts: { total: number; blocked: number; permanent: number; trusted: number }
+  members: GroupModerationMember[]
+  logs: GroupModerationLog[]
+  behavior: {
+    warning_before_penalty: boolean
+    blocked_messages_retracted: boolean
+    outbound_messages_single_line: boolean
+    scope: string
+  }
+}
+
 function errorMessage(data: unknown, status: number): string {
   if (data && typeof data === 'object' && 'detail' in data) {
     const detail = (data as { detail: unknown }).detail
@@ -184,4 +258,11 @@ export const api = {
   verifyGroupMember: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST' }),
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),
   closeGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' }),
+  groupModerationStatus: (botId: string) => request<GroupModerationStatus>(`/group-moderation/status?bot_id=${encodeURIComponent(botId)}`),
+  updateGroupModerationSettings: (botId: string, payload: Omit<GroupModerationSettings, 'bot_id' | 'updated_at'>) =>
+    request<GroupModerationStatus>(`/group-moderation/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  releaseModeratedMember: (memberId: string, resetStrikes = false) => request<GroupModerationStatus>(`/group-moderation/members/${encodeURIComponent(memberId)}/release?reset_strikes=${resetStrikes}`, { method: 'POST' }),
+  makeModeratedMemberPermanent: (memberId: string) => request<GroupModerationStatus>(`/group-moderation/members/${encodeURIComponent(memberId)}/permanent`, { method: 'POST' }),
+  trustModeratedMember: (memberId: string) => request<GroupModerationStatus>(`/group-moderation/members/${encodeURIComponent(memberId)}/trust`, { method: 'POST' }),
+  untrustModeratedMember: (memberId: string) => request<GroupModerationStatus>(`/group-moderation/members/${encodeURIComponent(memberId)}/untrust`, { method: 'POST' }),
 }

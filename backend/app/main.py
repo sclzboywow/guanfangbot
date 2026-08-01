@@ -2,10 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import bots, events, group_verification, qqbot
+from app.routers import bots, events, group_moderation, group_verification, qqbot
 
 settings = get_settings()
-app = FastAPI(title="QQ Bot Admin Starter API", version="0.2.0")
+app = FastAPI(title="QQ Bot Admin Starter API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -24,3 +24,4 @@ app.include_router(bots.router, prefix="/api")
 app.include_router(qqbot.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(group_verification.router, prefix="/api")
+app.include_router(group_moderation.router, prefix="/api")

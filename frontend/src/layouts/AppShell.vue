@@ -12,6 +12,7 @@ const coreLinks = [
 ]
 const featureLinks = [
   { to: '/group-verification', label: '入群验证', icon: 'shield' },
+  { to: '/group-moderation', label: '群消息治理', icon: 'shield' },
 ]
 </script>
 

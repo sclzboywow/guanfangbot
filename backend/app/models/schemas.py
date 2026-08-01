@@ -4,6 +4,11 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.event_catalog import EVENT_CODE_SET
+from app.services.group_moderation_repository import (
+    DEFAULT_CONTENT_KEYWORDS,
+    DEFAULT_NICKNAME_KEYWORDS,
+    DEFAULT_PENALTY_MINUTES,
+)
 
 
 class BotPublic(BaseModel):
@@ -115,6 +120,41 @@ class GroupVerificationSettingsUpdate(BaseModel):
         if self.max_operand < self.min_operand:
             raise ValueError("最大数字不能小于最小数字")
         return self
+
+
+class GroupModerationSettingsUpdate(BaseModel):
+    enabled: bool = False
+    detect_mobile: bool = True
+    detect_landline: bool = True
+    detect_wechat: bool = True
+    detect_content_keywords: bool = True
+    detect_nickname_keywords: bool = True
+    exempt_admins: bool = True
+    penalty_minutes: list[int] = Field(default_factory=lambda: list(DEFAULT_PENALTY_MINUTES), min_length=1, max_length=8)
+    permanent_after: int = Field(default=5, ge=2, le=20)
+    escalation_cooldown_seconds: int = Field(default=60, ge=0, le=3600)
+    warning_cooldown_seconds: int = Field(default=30, ge=0, le=3600)
+    content_keywords: list[str] = Field(default_factory=lambda: list(DEFAULT_CONTENT_KEYWORDS), max_length=100)
+    nickname_keywords: list[str] = Field(default_factory=lambda: list(DEFAULT_NICKNAME_KEYWORDS), max_length=100)
+
+    @field_validator("penalty_minutes")
+    @classmethod
+    def validate_penalty_minutes(cls, value: list[int]) -> list[int]:
+        cleaned = []
+        for item in value:
+            minutes = int(item)
+            if minutes < 1 or minutes > 43200:
+                raise ValueError("阶梯时长必须在 1 分钟到 30 天之间")
+            cleaned.append(minutes)
+        return cleaned
+
+    @field_validator("content_keywords", "nickname_keywords")
+    @classmethod
+    def validate_keywords(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if any(len(item) > 40 for item in cleaned):
+            raise ValueError("单个关键词不能超过 40 个字符")
+        return cleaned
 
 
 class OpenApiRequest(BaseModel):
