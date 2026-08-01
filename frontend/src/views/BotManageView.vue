@@ -115,6 +115,7 @@ onMounted(load)
           <section class="card panel tools">
             <h2 class="section-title">开发工具</h2>
             <RouterLink :to="`/events?bot=${bot.id}`">事件与回调 <b>→</b></RouterLink>
+            <RouterLink :to="`/group-verification?bot=${bot.id}`">入群验证 <b>→</b></RouterLink>
             <RouterLink :to="`/api-console?bot=${bot.id}`">OpenAPI 调试 <b>→</b></RouterLink>
             <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noopener noreferrer">官方文档 <b>↗</b></a>
           </section>
