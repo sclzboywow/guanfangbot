@@ -1,6 +1,7 @@
 import asyncio
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
@@ -66,8 +67,16 @@ class QQBotClient:
             self._expires_at = time.time() + max(60, expires_in - 60)
             return self._token, expires_in
 
-    async def request(self, method: str, path: str, query: dict[str, str] | None, body: Any | None) -> dict[str, Any]:
-        token, _ = await self.get_access_token()
+    async def _request_once(
+        self,
+        method: str,
+        path: str,
+        query: dict[str, str] | None,
+        body: Any | None,
+        *,
+        force_token: bool = False,
+    ) -> dict[str, Any]:
+        token, _ = await self.get_access_token(force=force_token)
         url = f"{self.settings.qqbot_api_base.rstrip('/')}{path}"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
         try:
@@ -87,6 +96,42 @@ class QQBotClient:
             if key.lower() in {"content-type", "date", "x-request-id", "trace-id"}
         }
         return {"status_code": response.status_code, "data": data, "headers": safe_headers}
+
+    async def request(self, method: str, path: str, query: dict[str, str] | None, body: Any | None) -> dict[str, Any]:
+        result = await self._request_once(method, path, query, body)
+        if result["status_code"] == 401:
+            result = await self._request_once(method, path, query, body, force_token=True)
+        return result
+
+    async def send_group_text(
+        self,
+        group_openid: str,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        msg_seq: int = 1,
+    ) -> dict[str, Any]:
+        """Send a one-line plain-text group message."""
+        normalized = " ".join(str(content).split())
+        if not normalized:
+            raise HTTPException(status_code=400, detail="群消息内容不能为空")
+        body: dict[str, Any] = {"content": normalized, "msg_type": 0}
+        if msg_id:
+            body["msg_id"] = msg_id
+            body["msg_seq"] = msg_seq
+        elif event_id:
+            body["event_id"] = event_id
+            body["msg_seq"] = msg_seq
+        path = f"/v2/groups/{quote(group_openid, safe='')}/messages"
+        return await self.request("POST", path, None, body)
+
+    async def retract_group_message(self, group_openid: str, message_id: str) -> dict[str, Any]:
+        path = (
+            f"/v2/groups/{quote(group_openid, safe='')}/messages/"
+            f"{quote(message_id, safe='')}"
+        )
+        return await self.request("DELETE", path, None, None)
 
     async def fetch_me(self) -> dict[str, Any]:
         """Fetch current bot profile via GET /users/@me."""

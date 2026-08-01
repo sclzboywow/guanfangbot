@@ -1,18 +1,21 @@
 import json
+import logging
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.services.bot_repository import bot_repository
 from app.services.event_catalog import event_catalog_payload
+from app.services.group_verification_service import group_verification_service
 from app.services.qq_signature import sign_validation, verify_request_signature
 
 router = APIRouter(prefix="/events", tags=["events"])
 _recent_events: deque[dict[str, Any]] = deque(maxlen=100)
+logger = logging.getLogger(__name__)
 
 
 @router.get("/recent")
@@ -72,7 +75,18 @@ def _resolve_credentials(app_id: str | None) -> tuple[str, str, str] | None:
     return None
 
 
-async def _receive_event(request: Request, app_id: str | None) -> JSONResponse:
+async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    try:
+        await group_verification_service.handle_event(bot_id, event_type, payload)
+    except Exception:
+        logger.exception("feature event processing failed: %s", event_type)
+
+
+async def _receive_event(
+    request: Request,
+    app_id: str | None,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
     body = await request.body()
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
@@ -128,16 +142,24 @@ async def _receive_event(request: Request, app_id: str | None) -> JSONResponse:
         "received_at": received_at,
         "payload": payload,
     })
+    background_tasks.add_task(_process_feature_event, bot_id, event_type, payload)
     return JSONResponse({"op": 12})
 
 
 @router.post("/callback/{app_id}")
-async def receive_event_for_app(app_id: str, request: Request) -> JSONResponse:
+async def receive_event_for_app(
+    app_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
     """Recommended multi-bot callback entry: one URL per AppID."""
-    return await _receive_event(request, app_id.strip())
+    return await _receive_event(request, app_id.strip(), background_tasks)
 
 
 @router.post("/callback")
-async def receive_event_legacy(request: Request) -> JSONResponse:
+async def receive_event_legacy(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
     """Compatibility entry for a single configured bot or X-Bot-Appid header."""
-    return await _receive_event(request, None)
+    return await _receive_event(request, None, background_tasks)

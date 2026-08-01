@@ -29,8 +29,22 @@ class BotRepository:
             self._persist()
             return
         raw = json.loads(self._path.read_text(encoding="utf-8") or "{}")
-        bots = raw.get("bots", raw if isinstance(raw, dict) else {})
-        self._bots = {str(key): value for key, value in bots.items()}
+        if isinstance(raw, dict):
+            bots: Any = raw.get("bots", raw)
+        elif isinstance(raw, list):
+            bots = raw
+        else:
+            bots = {}
+        if isinstance(bots, list):
+            self._bots = {
+                str(item.get("id") or f"bot-{index}"): item
+                for index, item in enumerate(bots)
+                if isinstance(item, dict)
+            }
+        elif isinstance(bots, dict):
+            self._bots = {str(key): value for key, value in bots.items() if isinstance(value, dict)}
+        else:
+            self._bots = {}
 
     def _persist(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

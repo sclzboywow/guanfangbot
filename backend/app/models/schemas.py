@@ -1,7 +1,7 @@
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.event_catalog import EVENT_CODE_SET
 
@@ -103,6 +103,18 @@ class BotUpdate(BaseModel):
         if unknown:
             raise ValueError(f"包含未知事件类型：{', '.join(unknown)}")
         return cleaned
+
+
+class GroupVerificationSettingsUpdate(BaseModel):
+    enabled: bool = False
+    min_operand: int = Field(default=1, ge=0, le=100)
+    max_operand: int = Field(default=20, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "GroupVerificationSettingsUpdate":
+        if self.max_operand < self.min_operand:
+            raise ValueError("最大数字不能小于最小数字")
+        return self
 
 
 class OpenApiRequest(BaseModel):
