@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.services.bot_repository import bot_repository
+from app.services.event_catalog import event_catalog_payload
 from app.services.qq_signature import sign_validation, verify_request_signature
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -20,6 +21,43 @@ def recent_events(bot_id: str | None = Query(default=None)) -> list[dict[str, An
     if bot_id:
         events = [event for event in events if event.get("bot_id") == bot_id]
     return events
+
+
+@router.get("/status")
+def event_status(bot_id: str = Query(...)) -> dict[str, Any]:
+    bot = bot_repository.get(bot_id)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="机器人不存在")
+
+    detection = bot_repository.get_event_detection(bot_id)
+    verified_at, observed = detection if detection is not None else (None, {})
+    selected = set(bot.event_scopes)
+    groups = event_catalog_payload()
+    selected_count = 0
+    observed_count = 0
+
+    for group in groups:
+        for event in group["events"]:
+            code = str(event["code"])
+            event["selected"] = code in selected
+            event["observed"] = code in observed
+            event["last_received_at"] = observed.get(code)
+            selected_count += int(event["selected"])
+            observed_count += int(event["observed"])
+
+    return {
+        "bot_id": bot.id,
+        "app_id": bot.app_id,
+        "callback_url": bot.callback_url,
+        "callback_verified": bool(verified_at),
+        "callback_verified_at": verified_at,
+        "official_subscription_query_supported": False,
+        "detection_note": "QQ Webhook 已勾选事件没有公开查询接口；本页通过回调验证和真实事件到达记录接入状态。",
+        "selected_count": selected_count,
+        "observed_count": observed_count,
+        "total_count": sum(len(group["events"]) for group in groups),
+        "groups": groups,
+    }
 
 
 def _resolve_credentials(app_id: str | None) -> tuple[str, str, str] | None:
@@ -56,6 +94,7 @@ async def _receive_event(request: Request, app_id: str | None) -> JSONResponse:
     bot_id, resolved_app_id, secret = credentials
     op = payload.get("op")
     data = payload.get("d") if isinstance(payload.get("d"), dict) else {}
+    received_at = datetime.now(timezone.utc).isoformat()
 
     if op == 13:
         plain_token = str(data.get("plain_token") or "")
@@ -63,13 +102,13 @@ async def _receive_event(request: Request, app_id: str | None) -> JSONResponse:
         if not plain_token or not event_ts:
             raise HTTPException(status_code=400, detail="缺少 plain_token 或 event_ts")
         signature = sign_validation(secret, event_ts, plain_token)
-        bot_repository.set_status(bot_id, "online")
+        bot_repository.mark_callback_verified(bot_id, received_at)
         _recent_events.append({
             "id": str(uuid4()),
             "bot_id": bot_id,
             "app_id": resolved_app_id,
             "type": "CALLBACK_VALIDATION",
-            "received_at": datetime.now(timezone.utc).isoformat(),
+            "received_at": received_at,
             "payload": {"op": 13},
         })
         return JSONResponse({"plain_token": plain_token, "signature": signature})
@@ -80,13 +119,13 @@ async def _receive_event(request: Request, app_id: str | None) -> JSONResponse:
         raise HTTPException(status_code=401, detail="签名校验失败")
 
     event_type = str(payload.get("t") or payload.get("type") or (f"OP_{op}" if op is not None else "UNKNOWN"))
-    bot_repository.set_status(bot_id, "online")
+    bot_repository.mark_event_observed(bot_id, event_type, received_at)
     _recent_events.append({
         "id": str(uuid4()),
         "bot_id": bot_id,
         "app_id": resolved_app_id,
         "type": event_type,
-        "received_at": datetime.now(timezone.utc).isoformat(),
+        "received_at": received_at,
         "payload": payload,
     })
     return JSONResponse({"op": 12})
