@@ -49,6 +49,38 @@ export interface BotEvent {
   payload: unknown
 }
 
+export type EventPermission = 'basic' | 'special' | 'platform'
+
+export interface EventStatusItem {
+  code: string
+  label: string
+  description: string
+  permission: EventPermission
+  selected: boolean
+  observed: boolean
+  last_received_at?: string | null
+}
+
+export interface EventStatusGroup {
+  key: string
+  label: string
+  events: EventStatusItem[]
+}
+
+export interface EventStatusResponse {
+  bot_id: string
+  app_id: string
+  callback_url: string
+  callback_verified: boolean
+  callback_verified_at?: string | null
+  official_subscription_query_supported: boolean
+  detection_note: string
+  selected_count: number
+  observed_count: number
+  total_count: number
+  groups: EventStatusGroup[]
+}
+
 function errorMessage(data: unknown, status: number): string {
   if (data && typeof data === 'object' && 'detail' in data) {
     const detail = (data as { detail: unknown }).detail
@@ -87,4 +119,5 @@ export const api = {
   openApi: (payload: { bot_id: string; method: string; path: string; query?: Record<string, string>; body?: unknown }) =>
     request<{ status_code: number; data: unknown; headers: Record<string, string> }>('/qqbot/openapi', { method: 'POST', body: JSON.stringify(payload) }),
   recentEvents: (botId?: string) => request<BotEvent[]>(botId ? `/events/recent?bot_id=${encodeURIComponent(botId)}` : '/events/recent'),
+  eventStatus: (botId: string) => request<EventStatusResponse>(`/events/status?bot_id=${encodeURIComponent(botId)}`),
 }
