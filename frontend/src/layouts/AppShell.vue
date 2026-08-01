@@ -5,10 +5,13 @@ import AppIcon from '@/components/AppIcon.vue'
 import RobotMark from '@/components/RobotMark.vue'
 
 const mobileOpen = ref(false)
-const links = [
+const coreLinks = [
   { to: '/bots', label: '我的机器人', icon: 'bot' },
   { to: '/events', label: '事件调试', icon: 'events' },
   { to: '/api-console', label: 'OpenAPI 调试', icon: 'terminal' },
+]
+const featureLinks = [
+  { to: '/group-verification', label: '入群验证', icon: 'shield' },
 ]
 </script>
 
@@ -25,10 +28,18 @@ const links = [
       </div>
 
       <nav class="nav">
-        <RouterLink v-for="item in links" :key="item.to" :to="item.to" class="nav-item" @click="mobileOpen = false">
+        <RouterLink v-for="item in coreLinks" :key="item.to" :to="item.to" class="nav-item" @click="mobileOpen = false">
           <span class="nav-ico"><AppIcon :name="item.icon" /></span>
           <span>{{ item.label }}</span>
         </RouterLink>
+
+        <div class="nav-section">功能开发</div>
+        <RouterLink v-for="item in featureLinks" :key="item.to" :to="item.to" class="nav-item" @click="mobileOpen = false">
+          <span class="nav-ico"><AppIcon :name="item.icon" /></span>
+          <span>{{ item.label }}</span>
+        </RouterLink>
+
+        <div class="nav-section">文档</div>
         <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noopener noreferrer" class="nav-item">
           <span class="nav-ico"><AppIcon name="docs" /></span>
           <span>官方开发文档</span>
@@ -38,7 +49,7 @@ const links = [
 
       <div class="sidebar-summary">
         <strong>开发控制台</strong>
-        <span>凭证、回调、事件与接口调试</span>
+        <span>凭证、回调、事件、功能与接口调试</span>
       </div>
     </aside>
     <div v-if="mobileOpen" class="mask" @click="mobileOpen = false"></div>
@@ -53,6 +64,7 @@ const links = [
 .brand-name { font-size: 15px; font-weight: 750; }
 .brand-sub { margin-top: 2px; color: var(--ink-4); font-size: 11px; }
 .nav { flex: 1; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.nav-section { margin: 14px 10px 3px; color: var(--ink-4); font-size: 9.5px; font-weight: 750; letter-spacing: .08em; }
 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border-radius: 14px; color: var(--ink-2); font-size: 13.5px; font-weight: 650; transition: .15s ease; }
 .nav-item:hover { background: rgba(0,0,0,.04); }
 .nav-item.router-link-active { background: var(--accent-soft); color: var(--accent); }
