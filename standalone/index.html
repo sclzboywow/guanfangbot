@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>QQ 机器人开发管理台 - 独立预览</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-icon">🤖</div><div><strong>QQ 机器人</strong><span>开发与运营管理台</span></div></div>
+    <nav>
+      <button class="nav-item active" data-view="bots">◉ <span>我的机器人</span></button>
+      <button class="nav-item" data-view="events">⌁ <span>事件与回调</span></button>
+      <button class="nav-item" data-view="testers">♙ <span>开发者测试</span></button>
+      <button class="nav-item" data-view="console">›_ <span>API 调试台</span></button>
+      <button class="nav-item" data-view="settings">⚙ <span>项目设置</span></button>
+      <a class="nav-item" href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank">▤ <span>官方开发文档</span><em>↗</em></a>
+    </nav>
+    <div class="dev-state"><i></i><div><b>开发模式</b><span>模拟数据已启用</span></div></div>
+    <div class="account"><div class="account-avatar">DEV</div><div><b>本地开发者</b><span>密钥由后端管理</span></div></div>
+  </aside>
+  <main>
+    <section class="page view active" id="view-bots">
+      <header><div><h1>我的机器人</h1><p>管理机器人配置、事件订阅、测试成员与 OpenAPI 调用。</p></div><button class="primary" disabled>＋ 创建机器人</button></header>
+      <div class="meta"><span><b>4</b> 个机器人</span><span class="green"><b>2</b> 个在线</span><small>● 创建机器人请前往 QQ 开放平台</small></div>
+      <div class="bot-grid" id="botGrid"></div>
+    </section>
+
+    <section class="page view" id="view-manage">
+      <button class="back" data-view="bots">← 返回机器人列表</button>
+      <header><div class="manage-title"><div class="round-avatar">BOT</div><div><h1 id="manageName">未选择机器人</h1><p class="mono" id="manageId">AppID -</p></div><span class="status">未接入</span></div><button class="primary" id="saveBot">保存修改</button></header>
+      <div class="manage-layout">
+        <aside class="subnav"><a href="#basic">基本信息</a><a href="#cred">开发凭证</a><a href="#subscription">事件订阅</a><a href="#safe">安全配置</a></aside>
+        <div class="manage-body">
+          <article class="card" id="basic"><h2>基本信息</h2><p>这些字段当前保存在本地预览状态。</p><label>机器人名称<input id="botNameInput" value="" placeholder="机器人名称"></label><label>机器人介绍<textarea id="botDescInput" placeholder="机器人介绍"></textarea></label></article>
+          <article class="card" id="cred"><h2>开发凭证</h2><p>AppSecret 不会显示在浏览器中。</p><div class="setting-row"><div><b>AppID</b><span>机器人唯一标识</span></div><code id="manageAppId">-</code><button class="copy">复制</button></div><div class="setting-row"><div><b>AppSecret</b><span>仅服务端可读取</span></div><code>••••••••••••••••</code><mark>后端保管</mark></div></article>
+          <article class="card" id="subscription"><div class="card-head"><div><h2>事件订阅</h2><p>统一配置回调地址和订阅范围。</p></div><button data-view="events">打开配置</button></div><div class="notice blue">↯ 回调服务尚未连接真实平台。正式环境需完成签名验证。</div></article>
+          <article class="card" id="safe"><h2>安全配置</h2><p>上线前必须完成的安全项目。</p><label class="check"><input type="checkbox" checked disabled><span><b>密钥仅服务端保存</b><small>前端不包含 AppSecret 与 Access Token。</small></span></label><label class="check"><input type="checkbox"><span><b>管理台登录鉴权</b><small>部署前接入。</small></span></label><label class="check"><input type="checkbox"><span><b>操作审计与数据库</b><small>当前为模拟数据。</small></span></label></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="page view" id="view-events">
+      <header><div><h1>事件与回调</h1><p>配置事件接收入口、订阅范围，并查看最近事件。</p></div><button class="primary" id="saveEvents">保存配置</button></header>
+      <div class="two-col"><div><article class="card"><h2>HTTP 回调地址</h2><p>正式部署后将地址填写到 QQ 开放平台。</p><label>Callback URL<input class="mono" value="https://your-domain.example.com/api/events/callback"></label><div class="notice orange"><b>安全提醒：</b>示例接口尚未实现平台签名验证。</div></article><article class="card event-card"><h2>订阅事件</h2><p>最终范围以开放平台授权为准。</p><div class="event-grid" id="eventGrid"></div></article></div><aside><article class="card"><h2>接入状态</h2><div class="status-box"><span class="status waiting">待配置</span><p>后端入口已预留，尚未收到真实事件。</p></div><div class="kv"><span>入口路径</span><code>/api/events/callback</code></div><div class="kv"><span>最近事件</span><b>0</b></div></article></aside></div>
+    </section>
+
+    <section class="page view" id="view-testers">
+      <header><div><h1>开发者测试</h1><p>管理测试成员和使用场景。</p></div><button class="primary" disabled>添加测试成员</button></header>
+      <article class="card"><div class="card-head"><div><h2>测试成员</h2><p>当前列表为模拟数据。</p></div><input id="testerSearch" placeholder="搜索名称或 ID"></div><div id="testerList"></div></article>
+    </section>
+
+    <section class="page view" id="view-console">
+      <header><div><h1>API 调试台</h1><p>通过后端安全代理调用 QQ OpenAPI。</p></div><span class="status waiting">未配置凭证</span></header>
+      <div class="console-grid"><article class="card"><div class="request-line"><select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select><input class="mono" id="path" value="/users/@me"><button class="primary" id="sendRequest">发送</button></div><label>JSON Body<textarea class="mono" id="jsonBody">{}</textarea></label><div class="console-hint">仅允许相对路径，目标域名由后端固定。</div></article><article class="card response"><h2>响应</h2><pre id="response">尚未发送请求。</pre></article></div>
+    </section>
+
+    <section class="page view" id="view-settings">
+      <header><div><h1>项目设置</h1><p>查看本地服务状态和上线事项。</p></div></header>
+      <div class="settings-grid"><article class="card"><h2>后端连接</h2><div class="kv"><span>API 状态</span><b class="green-text">工程已包含</b></div><div class="kv"><span>QQ 凭证</span><b class="orange-text">未配置</b></div><div class="kv"><span>OpenAPI Base</span><code>https://api.bot.qq.com</code></div></article><article class="card"><h2>环境变量</h2><pre>QQBOT_APP_ID=
+QQBOT_CLIENT_SECRET=
+QQBOT_API_BASE=https://api.bot.qq.com</pre></article><article class="card wide"><h2>上线检查</h2><div class="check-grid"><label><input type="checkbox" checked disabled>AppSecret 仅放后端</label><label><input type="checkbox">管理台登录</label><label><input type="checkbox">事件签名校验</label><label><input type="checkbox">数据库和审计</label><label><input type="checkbox">HTTPS 反向代理</label><label><input type="checkbox">调试台权限限制</label></div></article></div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

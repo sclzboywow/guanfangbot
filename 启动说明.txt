@@ -1,0 +1,25 @@
+QQ 官方机器人管理台起步项目
+============================
+
+一、最快看页面
+--------------
+双击打开：standalone\index.html
+
+这个版本不需要安装任何软件，可以切换页面、打开机器人详情、编辑模拟信息、配置事件和查看 API 调试台。
+它不会调用真实 QQ 接口。
+
+二、启动正式工程（Windows）
+-------------------------
+1. 安装 Python 3.11+ 和 Node.js 20+。
+2. 进入 backend 文件夹，把 .env.example 复制为 .env。
+3. 在 .env 中填写 QQBOT_APP_ID 和 QQBOT_CLIENT_SECRET。
+4. 双击 start-backend.bat。
+5. 双击 start-frontend.bat。
+6. 浏览器打开 http://localhost:5173
+
+三、重要安全要求
+----------------
+- AppSecret 只能写在 backend\.env。
+- 不要把 .env 上传到 GitHub。
+- 不要在浏览器、Vue 文件或 LocalStorage 中保存 Access Token。
+- 正式上线前必须增加管理台登录、事件签名校验、数据库和审计日志。

@@ -1,0 +1,28 @@
+:root {
+  --bg: #f5f5f7;
+  --bg-elev: #ffffff;
+  --bg-sunken: #fafafa;
+  --ink: #1d1d1f;
+  --ink-2: #3c3c43;
+  --ink-3: #6e6e73;
+  --ink-4: #8e8e93;
+  --line: rgba(60, 60, 67, 0.12);
+  --line-strong: rgba(60, 60, 67, 0.22);
+  --accent: #0099ff;
+  --accent-soft: rgba(0, 153, 255, 0.08);
+  --accent-softer: rgba(0, 153, 255, 0.16);
+  --accent-border: rgba(0, 153, 255, 0.18);
+  --danger: #ff3b30;
+  --warn: #ff9500;
+  --ok: #30d158;
+  --online: #34c759;
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow: 0 4px 16px rgba(17, 24, 39, 0.06), 0 1px 4px rgba(17, 24, 39, 0.04);
+  --shadow-lg: 0 20px 50px rgba(17, 24, 39, 0.12), 0 4px 16px rgba(17, 24, 39, 0.06);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

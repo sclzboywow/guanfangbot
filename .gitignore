@@ -1,0 +1,21 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Backend
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets / runtime data
+.env
+backend/.env
+frontend/.env.local
+backend/data/*.json
+!backend/data/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
