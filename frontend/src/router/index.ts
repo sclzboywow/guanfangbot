@@ -3,6 +3,7 @@ import BotListView from '@/views/BotListView.vue'
 import BotManageView from '@/views/BotManageView.vue'
 import EventConfigView from '@/views/EventConfigView.vue'
 import ApiConsoleView from '@/views/ApiConsoleView.vue'
+import GroupVerificationView from '@/views/GroupVerificationView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -11,6 +12,7 @@ const router = createRouter({
     { path: '/bots', name: 'bots', component: BotListView },
     { path: '/bots/:id', name: 'bot-manage', component: BotManageView, props: true },
     { path: '/events', name: 'events', component: EventConfigView },
+    { path: '/group-verification', name: 'group-verification', component: GroupVerificationView },
     { path: '/api-console', name: 'api-console', component: ApiConsoleView },
     { path: '/:pathMatch(.*)*', redirect: '/bots' },
   ],
