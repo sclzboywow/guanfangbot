@@ -3,6 +3,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.services.event_catalog import EVENT_CODE_SET
+
 
 class BotPublic(BaseModel):
     id: str
@@ -90,6 +92,17 @@ class BotUpdate(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("回调地址必须是完整的 http/https URL")
         return value
+
+    @field_validator("event_scopes")
+    @classmethod
+    def validate_event_scopes(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        unknown = sorted(set(cleaned) - EVENT_CODE_SET)
+        if unknown:
+            raise ValueError(f"包含未知事件类型：{', '.join(unknown)}")
+        return cleaned
 
 
 class OpenApiRequest(BaseModel):
