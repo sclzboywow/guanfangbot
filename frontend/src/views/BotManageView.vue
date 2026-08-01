@@ -51,17 +51,6 @@ async function save() {
   finally { busy.value = false }
 }
 
-async function refreshToken() {
-  if (!bot.value) return
-  busy.value = true; error.value = ''
-  try {
-    const result = await api.refreshToken(bot.value.id)
-    credential.value = await api.credentialStatus(bot.value.id)
-    message.value = `Token 已刷新，有效期约 ${result.expires_in} 秒`
-  } catch (e) { error.value = e instanceof Error ? e.message : '刷新失败' }
-  finally { busy.value = false }
-}
-
 async function removeBot() {
   if (!bot.value || !confirm(`确认删除 AppID ${bot.value.app_id}？`)) return
   await api.deleteBot(bot.value.id)
@@ -103,9 +92,9 @@ onMounted(load)
           <section class="card panel">
             <h2 class="section-title">开发状态</h2>
             <div class="kv"><span>凭证</span><b>{{ credential?.configured ? '可用' : '未配置' }}</b></div>
-            <div class="kv"><span>Token</span><b>{{ credential?.token_cached ? '已缓存' : '未缓存' }}</b></div>
+            <div class="kv"><span>Token</span><b>{{ credential?.token_cached ? '已缓存' : '按需获取' }}</b></div>
             <div class="kv"><span>最近事件</span><b>{{ events.length }}</b></div>
-            <button class="btn full" :disabled="busy || !bot.has_secret" @click="refreshToken">刷新 Access Token</button>
+            <p class="token-note">Access Token 由后端在调用 OpenAPI 时自动获取、缓存并在到期后重新申请，无需手动刷新。</p>
           </section>
           <section class="card panel tools">
             <h2 class="section-title">开发工具</h2>
@@ -123,5 +112,5 @@ onMounted(load)
 </template>
 
 <style scoped>
-.manage-page{max-width:1080px}.back{margin:0 0 18px;padding:0;border:0;background:none;color:var(--ink-3)}.state{padding:40px;text-align:center}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}.panel{padding:22px}.fields{display:flex;flex-direction:column;gap:15px;margin-top:20px}.input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.field small{color:var(--ink-4);word-break:break-all}.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.side{display:flex;flex-direction:column;gap:18px}.kv{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);color:var(--ink-3)}.kv b{color:var(--ink)}.full{width:100%;margin-top:14px}.tools{display:flex;flex-direction:column;gap:8px}.tools h2{margin-bottom:6px}.tools a{display:flex;justify-content:space-between;padding:12px;border-radius:11px;background:var(--bg-sunken);font-weight:650}.tools a:hover{background:var(--accent-soft);color:var(--accent)}.danger-zone{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:18px;padding:18px 22px}.danger-zone strong,.danger-zone span{display:block}.danger-zone span{margin-top:4px;color:var(--ink-4);font-size:12px}.notice{margin-top:12px}.ok{color:#238541}.error{color:var(--danger)}@media(max-width:840px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:1fr 1fr}}@media(max-width:620px){.side{display:flex}.danger-zone{align-items:flex-start;flex-direction:column}}
+.manage-page{max-width:1080px}.back{margin:0 0 18px;padding:0;border:0;background:none;color:var(--ink-3)}.state{padding:40px;text-align:center}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}.panel{padding:22px}.fields{display:flex;flex-direction:column;gap:15px;margin-top:20px}.input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.field small{color:var(--ink-4);word-break:break-all}.actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.side{display:flex;flex-direction:column;gap:18px}.kv{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);color:var(--ink-3)}.kv b{color:var(--ink)}.token-note{margin:14px 0 0;padding:12px;border-radius:11px;background:var(--bg-sunken);color:var(--ink-4);font-size:11.5px;line-height:1.55}.tools{display:flex;flex-direction:column;gap:8px}.tools h2{margin-bottom:6px}.tools a{display:flex;justify-content:space-between;padding:12px;border-radius:11px;background:var(--bg-sunken);font-weight:650}.tools a:hover{background:var(--accent-soft);color:var(--accent)}.danger-zone{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:18px;padding:18px 22px}.danger-zone strong,.danger-zone span{display:block}.danger-zone span{margin-top:4px;color:var(--ink-4);font-size:12px}.notice{margin-top:12px}.ok{color:#238541}.error{color:var(--danger)}@media(max-width:840px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:1fr 1fr}}@media(max-width:620px){.side{display:flex}.danger-zone{align-items:flex-start;flex-direction:column}}
 </style>
