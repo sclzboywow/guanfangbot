@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -36,8 +36,13 @@ def _error_detail(data: dict[str, Any], fallback: str = "百度 OAuth 请求失�
     return str(value)[:1200]
 
 
+def _allowed_baidu_host(hostname: str | None) -> bool:
+    host = str(hostname or "").lower().rstrip(".")
+    return host == "baidu.com" or host.endswith(".baidu.com") or host == "bdstatic.com" or host.endswith(".bdstatic.com")
+
+
 class BaiduOAuthService:
-    """Owns one server-side Baidu Netdisk account for shared-library delivery."""
+    """Owns one server-side Baidu Netdisk authorization for all library delivery users."""
 
     def __init__(
         self,
@@ -86,12 +91,11 @@ class BaiduOAuthService:
         access_token = str(tokens.get("access_token") or "")
         refresh_token = str(tokens.get("refresh_token") or "")
         expires_at = parse_time(tokens.get("expires_at"))
-        now = utc_now_dt()
-        authorized = bool(access_token and (expires_at is None or expires_at > now))
+        access_valid = bool(access_token and (expires_at is None or expires_at > utc_now_dt()))
         pending = self.repository.latest_pending_session()
         return {
             "app_configured": self.app_configured,
-            "authorized": authorized,
+            "authorized": bool(access_valid or refresh_token),
             "refreshable": bool(refresh_token),
             "token_expires_at": tokens.get("expires_at"),
             "authorized_at": tokens.get("authorized_at"),
@@ -119,11 +123,7 @@ class BaiduOAuthService:
         app_key, _ = self._require_app()
         status_code, data = await self._oauth_get(
             "/oauth/2.0/device/code",
-            {
-                "response_type": "device_code",
-                "client_id": app_key,
-                "scope": "basic,netdisk",
-            },
+            {"response_type": "device_code", "client_id": app_key, "scope": "basic,netdisk"},
         )
         device_code = str(data.get("device_code") or "").strip()
         if status_code >= 400 or not device_code:
@@ -157,8 +157,7 @@ class BaiduOAuthService:
         expires_at = parse_time(session.get("expires_at"))
         if expires_at is not None and expires_at <= utc_now_dt():
             self.repository.set_session_status(session_id, "expired", "二维码已过期")
-            session = self.repository.get_session(session_id)
-            public = self._public_session(session)
+            public = self._public_session(self.repository.get_session(session_id))
             if public is None:
                 raise BaiduOAuthError("授权会话不存在")
             public["authorized"] = False
@@ -188,8 +187,7 @@ class BaiduOAuthService:
                 scope=str(data.get("scope") or ""),
             )
             self.repository.set_session_status(session_id, "authorized")
-            session = self.repository.get_session(session_id)
-            public = self._public_session(session)
+            public = self._public_session(self.repository.get_session(session_id))
             if public is None:
                 raise BaiduOAuthError("授权会话不存在")
             public["authorized"] = True
@@ -270,9 +268,6 @@ class BaiduOAuthService:
                 raise BaiduOAuthError("百度网盘尚未扫码授权")
             return await self._refresh_access_token()
 
-    def disconnect(self) -> None:
-        self.repository.clear_tokens()
-
     async def fetch_qr_image(self, session_id: str) -> tuple[bytes, str]:
         session = self.repository.get_session(session_id)
         if session is None or str(session.get("status")) != "pending":
@@ -280,24 +275,38 @@ class BaiduOAuthService:
         expires_at = parse_time(session.get("expires_at"))
         if expires_at is not None and expires_at <= utc_now_dt():
             raise BaiduOAuthError("授权二维码已过期")
-        qrcode_url = str(session.get("qrcode_url") or "").strip()
-        parsed = urlparse(qrcode_url)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname != "openapi.baidu.com":
+        current_url = str(session.get("qrcode_url") or "").strip()
+        parsed = urlparse(current_url)
+        if parsed.scheme not in {"http", "https"} or not _allowed_baidu_host(parsed.hostname):
             raise BaiduOAuthError("百度返回的二维码地址无效")
         try:
             async with httpx.AsyncClient(
                 timeout=self.settings.baidu_oauth_timeout,
                 transport=self.transport,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={"User-Agent": "QQBot-Shared-Library/1.0"},
             ) as client:
-                response = await client.get(qrcode_url)
+                response: httpx.Response | None = None
+                for _ in range(4):
+                    response = await client.get(current_url)
+                    if response.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = response.headers.get("location", "")
+                    next_url = urljoin(current_url, location)
+                    next_parsed = urlparse(next_url)
+                    if next_parsed.scheme not in {"http", "https"} or not _allowed_baidu_host(next_parsed.hostname):
+                        raise BaiduOAuthError("百度二维码跳转到了不允许的地址")
+                    current_url = next_url
+                if response is None:
+                    raise BaiduOAuthError("无法读取百度授权二维码")
                 response.raise_for_status()
+        except BaiduOAuthError:
+            raise
         except httpx.HTTPError as exc:
             raise BaiduOAuthError(f"读取百度授权二维码失败：{exc}") from exc
         content_type = response.headers.get("content-type", "image/png").split(";", 1)[0]
         if not content_type.startswith("image/"):
-            content_type = "image/png"
+            raise BaiduOAuthError("百度二维码响应不是图片")
         return response.content, content_type
 
 
