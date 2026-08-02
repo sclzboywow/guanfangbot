@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.services.bot_repository import bot_repository
+from app.services.chat_service import chat_service
 from app.services.event_catalog import event_catalog_payload
 from app.services.group_moderation_service import group_moderation_service
 from app.services.group_verification_service import group_verification_service
@@ -85,6 +86,7 @@ def _resolve_credentials(app_id: str | None) -> tuple[str, str, str] | None:
 
 async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
     handlers = (
+        ("chat", chat_service.handle_event),
         ("group_verification", group_verification_service.handle_event),
         ("group_moderation", group_moderation_service.handle_event),
         ("library_delivery", library_delivery_service.handle_event),
