@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, type Bot } from '@/services/api'
 import {
   libraryDeliveryApi,
+  type BaiduOAuthSession,
   type LibraryDeliverySettingsPayload,
   type LibraryDeliveryStatus,
   type LibraryResult,
@@ -13,16 +14,17 @@ const route = useRoute()
 const bots = ref<Bot[]>([])
 const botId = ref('')
 const status = ref<LibraryDeliveryStatus | null>(null)
+const oauthSession = ref<BaiduOAuthSession | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const authorizing = ref(false)
 const message = ref('')
 const error = ref('')
-const accessToken = ref('')
-const clearAccessToken = ref(false)
 const testKeyword = ref('')
 const testResults = ref<LibraryResult[]>([])
 const testTotal = ref<number | null>(null)
+let pollTimer: number | undefined
 
 const form = reactive<LibraryDeliverySettingsPayload>({
   enabled: false,
@@ -33,7 +35,6 @@ const form = reactive<LibraryDeliverySettingsPayload>({
   size_column: '大小',
   fsid_column: 'fsid',
   path_column: '网盘地址',
-  clear_access_token: false,
   share_period: 7,
   session_ttl_seconds: 180,
   api_url: 'https://pan.baidu.com/rest/2.0/xpan/share',
@@ -42,6 +43,22 @@ const form = reactive<LibraryDeliverySettingsPayload>({
 
 const currentBot = computed(() => bots.value.find(item => item.id === botId.value) || null)
 const ttlMinutes = computed(() => Math.max(1, Math.round(form.session_ttl_seconds / 60)))
+const qrImageUrl = computed(() => {
+  if (!oauthSession.value?.qr_image_url) return ''
+  return `${oauthSession.value.qr_image_url}?expires=${encodeURIComponent(oauthSession.value.expires_at)}`
+})
+
+function stopPolling() {
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+  pollTimer = undefined
+}
+
+function schedulePoll(session: BaiduOAuthSession) {
+  stopPolling()
+  if (session.status !== 'pending') return
+  const delay = Math.max(3, session.interval_seconds || 5) * 1000
+  pollTimer = window.setTimeout(() => void pollOAuth(session.session_id), delay)
+}
 
 function applyStatus(value: LibraryDeliveryStatus) {
   status.value = value
@@ -54,14 +71,18 @@ function applyStatus(value: LibraryDeliveryStatus) {
     size_column: value.settings.size_column,
     fsid_column: value.settings.fsid_column,
     path_column: value.settings.path_column,
-    clear_access_token: false,
     share_period: value.settings.share_period,
     session_ttl_seconds: value.settings.session_ttl_seconds,
     api_url: value.settings.api_url,
     api_method: value.settings.api_method,
   })
-  accessToken.value = ''
-  clearAccessToken.value = false
+  if (value.oauth.pending_session?.status === 'pending') {
+    oauthSession.value = value.oauth.pending_session
+    schedulePoll(value.oauth.pending_session)
+  } else if (value.oauth.authorized) {
+    oauthSession.value = null
+    stopPolling()
+  }
 }
 
 async function load() {
@@ -83,17 +104,55 @@ async function save() {
   error.value = ''
   message.value = ''
   try {
-    const payload: LibraryDeliverySettingsPayload = {
-      ...form,
-      clear_access_token: clearAccessToken.value,
-    }
-    if (accessToken.value.trim()) payload.access_token = accessToken.value.trim()
-    applyStatus(await libraryDeliveryApi.updateSettings(botId.value, payload))
+    applyStatus(await libraryDeliveryApi.updateSettings(botId.value, { ...form }))
     message.value = '共享文库配置已保存'
   } catch (e) {
     error.value = e instanceof Error ? e.message : '保存失败'
   } finally {
     saving.value = false
+  }
+}
+
+async function startOAuth() {
+  if (!botId.value) return
+  authorizing.value = true
+  error.value = ''
+  message.value = ''
+  stopPolling()
+  try {
+    const result = await libraryDeliveryApi.startOAuth(botId.value)
+    oauthSession.value = result.session
+    if (status.value) status.value.oauth = result.oauth
+    message.value = '请使用百度网盘 App 扫描二维码并确认授权'
+    schedulePoll(result.session)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '无法生成授权二维码'
+  } finally {
+    authorizing.value = false
+  }
+}
+
+async function pollOAuth(sessionId: string) {
+  try {
+    const result = await libraryDeliveryApi.pollOAuth(sessionId)
+    oauthSession.value = result.session
+    if (status.value) status.value.oauth = result.oauth
+    if (result.oauth.authorized || result.session.authorized) {
+      stopPolling()
+      oauthSession.value = null
+      message.value = '百度网盘授权成功，Access Token 与刷新凭证已由后端保存'
+      await load()
+      return
+    }
+    if (result.session.status === 'pending') {
+      schedulePoll(result.session)
+      return
+    }
+    stopPolling()
+    error.value = result.session.last_error || '授权未完成，请重新生成二维码'
+  } catch (e) {
+    stopPolling()
+    error.value = e instanceof Error ? e.message : '授权状态检查失败'
   }
 }
 
@@ -127,6 +186,8 @@ function actionText(action: string) {
 }
 
 watch(botId, () => {
+  stopPolling()
+  oauthSession.value = null
   message.value = ''
   error.value = ''
   testResults.value = []
@@ -143,6 +204,8 @@ onMounted(async () => {
     error.value = e instanceof Error ? e.message : '机器人列表加载失败'
   }
 })
+
+onBeforeUnmount(stopPolling)
 </script>
 
 <template>
@@ -150,7 +213,7 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1 class="page-title">共享文库发货</h1>
-        <p class="page-sub">群成员 @机器人检索标题，回复编号后创建百度网盘分享链接并自动发货。</p>
+        <p class="page-sub">群成员 @机器人检索标题，回复编号后由后端统一创建百度网盘分享链接。</p>
       </div>
       <div class="page-actions">
         <button class="btn" :disabled="loading || !botId" @click="load">{{ loading ? '刷新中…' : '刷新状态' }}</button>
@@ -179,9 +242,9 @@ onMounted(async () => {
           <small>{{ status?.database.ready ? status.settings.database_path : (status?.database.error || '等待检测') }}</small>
         </section>
         <section class="card summary-card">
-          <span>百度授权</span>
-          <strong :class="status?.settings.access_token_configured ? 'good' : 'warn'">{{ status?.settings.access_token_configured ? 'Access Token 已配置' : '未配置' }}</strong>
-          <small>凭证仅保存在服务端，不返回浏览器</small>
+          <span>百度网盘账号</span>
+          <strong :class="status?.oauth.authorized ? 'good' : 'warn'">{{ status?.oauth.authorized ? '已扫码授权' : '未授权' }}</strong>
+          <small>{{ status?.oauth.authorized ? `后端自动续期 · ${formatTime(status.oauth.token_expires_at)}` : '前端只扫码，不接触 Token' }}</small>
         </section>
         <section class="card summary-card">
           <span>成功发货</span>
@@ -190,18 +253,19 @@ onMounted(async () => {
         </section>
       </div>
 
-      <div v-if="status && (!status.requirements_ready || !status.database.ready || !status.settings.access_token_configured)" class="warning-box">
+      <div v-if="status && (!status.requirements_ready || !status.database.ready || !status.oauth.app_configured || !status.oauth.authorized)" class="warning-box">
         <strong>启用前检查</strong>
         <span v-if="!status.requirements_ready">请在 QQ 管理端开通 GROUP_AT_MESSAGE_CREATE 和 GROUP_MESSAGE_CREATE。</span>
         <span v-if="!status.database.ready">{{ status.database.error }}</span>
-        <span v-if="!status.settings.access_token_configured">请填写具备创建分享权限的百度网盘 Access Token。</span>
+        <span v-if="!status.oauth.app_configured">服务器需要配置 BAIDU_PAN_APP_KEY 和 BAIDU_PAN_SECRET_KEY。</span>
+        <span v-else-if="!status.oauth.authorized">请在下方生成二维码并使用百度网盘 App 扫码授权。</span>
       </div>
 
       <div class="layout">
         <main class="stack">
           <section class="card panel">
             <div class="section-head">
-              <div><h2 class="section-title">功能开关</h2><p class="section-sub">开启后自动把两个必需事件加入本地事件清单，QQ 管理端仍需手动授权。</p></div>
+              <div><h2 class="section-title">功能开关</h2><p class="section-sub">开启后把必需事件加入本地清单，QQ 管理端仍需实际开通。</p></div>
               <label class="switch"><input v-model="form.enabled" type="checkbox" /><span></span></label>
             </div>
             <div class="event-tags">
@@ -209,11 +273,37 @@ onMounted(async () => {
             </div>
           </section>
 
+          <section class="card panel oauth-panel">
+            <div class="section-head">
+              <div><h2 class="section-title">百度网盘扫码授权</h2><p class="section-sub">整个后端共用一个网盘账号。Access Token、Refresh Token 和自动刷新全部由服务器管理。</p></div>
+              <button class="btn" :disabled="authorizing || !status?.oauth.app_configured" @click="startOAuth">{{ authorizing ? '生成中…' : (status?.oauth.authorized ? '重新扫码授权' : '生成授权二维码') }}</button>
+            </div>
+            <div v-if="status?.oauth.authorized && !oauthSession" class="oauth-ready">
+              <strong>授权可用</strong>
+              <span>授权时间：{{ formatTime(status.oauth.authorized_at) }}</span>
+              <span>Token 预计过期：{{ formatTime(status.oauth.token_expires_at) }}</span>
+              <small>到期前后端会使用 Refresh Token 自动续期，QQ群用户不需要操作。</small>
+            </div>
+            <div v-else-if="oauthSession" class="oauth-qr">
+              <img v-if="qrImageUrl" :src="qrImageUrl" alt="百度网盘授权二维码" />
+              <div>
+                <strong>请使用百度网盘 App 扫码并确认</strong>
+                <span>授权码：<b class="mono">{{ oauthSession.user_code || '—' }}</b></span>
+                <span>二维码有效至：{{ formatTime(oauthSession.expires_at) }}</span>
+                <span>状态：{{ oauthSession.status === 'pending' ? '等待扫码确认' : oauthSession.status }}</span>
+                <a v-if="oauthSession.verification_url" :href="oauthSession.verification_url" target="_blank" rel="noopener noreferrer">二维码无法识别时打开百度授权页 ↗</a>
+                <small>页面会按百度返回的轮询间隔自动检查，不会把设备码或 Token 写入浏览器存储。</small>
+              </div>
+            </div>
+            <p v-else-if="!status?.oauth.app_configured" class="oauth-empty">先在服务器 `backend/.env` 配置百度开放平台 AppKey 与 SecretKey，再重建后端容器。</p>
+            <p v-else class="oauth-empty">点击“生成授权二维码”，扫码一次即可供本服务的全部资料发货使用。</p>
+          </section>
+
           <section class="card panel">
             <h2 class="section-title">SQLite 资料库</h2>
-            <p class="section-sub">数据库只读打开。默认映射与你截图中的“新网盘资料”表一致。</p>
+            <p class="section-sub">数据库由服务端统一持有并以只读方式检索，QQ群用户只有查询和发货能力。</p>
             <div class="fields top">
-              <div class="field wide"><label>容器内数据库路径</label><input v-model="form.database_path" class="input mono" /><small>建议上传为 /app/data/library.sqlite3</small></div>
+              <div class="field wide"><label>容器内数据库路径</label><input v-model="form.database_path" class="input mono" /><small>当前建议：/app/data/library.sqlite3</small></div>
               <div class="field"><label>表名</label><input v-model="form.table_name" class="input" /></div>
               <div class="field"><label>标题字段</label><input v-model="form.title_column" class="input" /></div>
               <div class="field"><label>分类字段</label><input v-model="form.category_column" class="input" /></div>
@@ -224,14 +314,8 @@ onMounted(async () => {
           </section>
 
           <section class="card panel">
-            <h2 class="section-title">百度网盘分享</h2>
-            <p class="section-sub">选择资料后使用 fsid 创建独立分享链接，分享码自动生成 4 位小写字母和数字。</p>
+            <h2 class="section-title">发货设置</h2>
             <div class="fields top">
-              <div class="field wide">
-                <label>百度网盘 Access Token</label>
-                <input v-model="accessToken" class="input mono" type="password" :placeholder="status?.settings.access_token_configured ? '已保存，留空不修改' : '请输入 Access Token'" />
-                <label class="check"><input v-model="clearAccessToken" type="checkbox" /> 清除已保存的 Access Token</label>
-              </div>
               <div class="field"><label>分享有效期</label><select v-model.number="form.share_period" class="select"><option :value="1">1 天</option><option :value="7">7 天</option><option :value="30">30 天</option><option :value="0">永久</option></select></div>
               <div class="field"><label>选择会话有效期</label><select v-model.number="form.session_ttl_seconds" class="select"><option :value="60">1 分钟</option><option :value="180">3 分钟</option><option :value="300">5 分钟</option><option :value="600">10 分钟</option></select></div>
               <details class="advanced wide"><summary>高级接口配置</summary><div class="advanced-grid"><div class="field"><label>接口地址</label><input v-model="form.api_url" class="input mono" /></div><div class="field"><label>method</label><input v-model="form.api_method" class="input mono" /></div></div></details>
@@ -239,9 +323,8 @@ onMounted(async () => {
           </section>
 
           <section class="card panel">
-            <div class="section-head">
-              <div><h2 class="section-title">数据库测试检索</h2><p class="section-sub">保存配置后可先验证表名、字段和标题匹配结果，不会创建分享链接。</p></div>
-            </div>
+            <h2 class="section-title">数据库测试检索</h2>
+            <p class="section-sub">只测试标题匹配，不创建百度分享。</p>
             <div class="test-row"><input v-model="testKeyword" class="input" placeholder="例如：不动产" @keyup.enter="testSearch" /><button class="btn" :disabled="testing || !testKeyword.trim()" @click="testSearch">{{ testing ? '检索中…' : '测试检索' }}</button></div>
             <p v-if="testTotal !== null" class="test-total">找到 {{ testTotal }} 个，显示前 {{ testResults.length }} 个</p>
             <div v-for="(item, index) in testResults" :key="`${item.fsid}-${index}`" class="result-row"><b>{{ index + 1 }}. {{ item.title }}</b><span>{{ item.category || '未分类' }} · fsid {{ item.fsid }}</span><small>{{ item.pan_path }}</small></div>
@@ -252,10 +335,10 @@ onMounted(async () => {
           <section class="card panel flow">
             <h2 class="section-title">群内流程</h2>
             <div><b>1</b><span>@机器人 不动产</span></div>
-            <div><b>2</b><span>找到12个结果，前5个：1.资料A；2.资料B；请在{{ ttlMinutes }}分钟内回复编号。</span></div>
+            <div><b>2</b><span>找到匹配结果并列出前 5 个，请在 {{ ttlMinutes }} 分钟内回复编号。</span></div>
             <div><b>3</b><span>用户直接回复 1</span></div>
-            <div><b>4</b><span>标题：资料A 分享链接：https://pan.baidu.com/s/... 提取码：a1b2 有效期：{{ form.share_period === 0 ? '永久' : `${form.share_period}天` }}</span></div>
-            <small>所有群消息均为单行；搜索会话按机器人、群和用户隔离，成功发货后立即失效。</small>
+            <div><b>4</b><span>后端使用统一百度授权创建分享，并发送标题、链接、提取码和有效期。</span></div>
+            <small>数据库和百度账号都属于服务器；QQ群用户不会获得数据库访问权、AppKey、SecretKey 或 Token。</small>
           </section>
 
           <section class="card panel logs">
@@ -277,5 +360,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.library-page{max-width:1240px}.selector{max-width:500px;margin-bottom:18px}.empty{padding:32px}.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}.summary-card{padding:17px;min-width:0}.summary-card span,.summary-card strong,.summary-card small{display:block}.summary-card span{color:var(--ink-4);font-size:11px}.summary-card strong{margin-top:7px;font-size:18px}.summary-card small{margin-top:6px;color:var(--ink-4);font-size:10.5px;line-height:1.45;overflow-wrap:anywhere}.good{color:#238541}.warn{color:var(--warn)}.muted{color:var(--ink-4)}.warning-box{display:flex;flex-direction:column;gap:5px;margin-bottom:18px;padding:13px 15px;border:1px solid rgba(255,149,0,.25);border-radius:13px;background:rgba(255,149,0,.07);font-size:12px}.warning-box strong{color:var(--warn)}.warning-box span{color:#7b5600}.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}.stack{display:flex;flex-direction:column;gap:18px}.panel{padding:22px}.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}.top{margin-top:18px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}.wide{grid-column:1/-1}.field small{display:block;margin-top:6px;color:var(--ink-4);font-size:10.5px}.check{display:flex!important;align-items:center;gap:7px;margin-top:8px;color:var(--ink-3)!important;font-size:11px!important}.check input{accent-color:var(--accent)}.switch{position:relative;display:inline-flex}.switch input{position:absolute;opacity:0}.switch span{width:44px;height:25px;border-radius:99px;background:#d7d7dc;transition:.15s}.switch span:after{content:'';display:block;width:21px;height:21px;margin:2px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);transition:.15s}.switch input:checked+span{background:var(--accent)}.switch input:checked+span:after{transform:translateX(19px)}.event-tags{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.event-tags span{padding:6px 9px;border-radius:999px;font-size:10px}.event-tags .ready{background:rgba(52,199,89,.12);color:#238541}.event-tags .missing{background:rgba(255,149,0,.12);color:var(--warn)}.advanced{padding:12px;border:1px solid var(--line);border-radius:12px}.advanced summary{cursor:pointer;font-size:12px;font-weight:700}.advanced-grid{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:13px}.test-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;margin-top:16px}.test-total{margin:14px 0 6px;color:var(--ink-3);font-size:12px}.result-row{display:flex;flex-direction:column;gap:4px;padding:11px 0;border-top:1px solid var(--line)}.result-row b{font-size:12px}.result-row span,.result-row small{color:var(--ink-4);font-size:10.5px;overflow-wrap:anywhere}.side{position:sticky;top:22px}.flow>div{display:grid;grid-template-columns:24px 1fr;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}.flow>div b{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:10px}.flow>div span{font-size:11px;line-height:1.55;overflow-wrap:anywhere}.flow>small{display:block;margin-top:12px;color:var(--ink-4);font-size:10.5px;line-height:1.55}.empty-small{padding:18px 0;color:var(--ink-4);font-size:11px}.log-row{padding:11px 0;border-top:1px solid var(--line)}.log-row>span{display:flex;align-items:center;justify-content:space-between;gap:8px}.log-row b{font-size:11.5px}.log-row em{padding:3px 6px;border-radius:999px;font-size:9px;font-style:normal}.log-row em.success{background:rgba(52,199,89,.12);color:#238541}.log-row em.failed{background:rgba(255,59,48,.1);color:var(--danger)}.log-row small,.log-row time{display:block;margin-top:5px;color:var(--ink-4);font-size:9.5px;line-height:1.4;overflow-wrap:anywhere}.notice{margin-top:14px}.ok{color:#238541}.error{color:var(--danger)}@media(max-width:1050px){.summary-grid{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{position:static;display:grid;grid-template-columns:1fr 1fr}}@media(max-width:700px){.summary-grid,.fields,.side,.advanced-grid{grid-template-columns:1fr}.wide{grid-column:auto}.test-row{grid-template-columns:1fr}}
+.library-page{max-width:1240px}.selector{max-width:500px;margin-bottom:18px}.empty{padding:32px}.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}.summary-card{padding:17px;min-width:0}.summary-card span,.summary-card strong,.summary-card small{display:block}.summary-card span{color:var(--ink-4);font-size:11px}.summary-card strong{margin-top:7px;font-size:18px}.summary-card small{margin-top:6px;color:var(--ink-4);font-size:10.5px;overflow:hidden;text-overflow:ellipsis}.good{color:#238541}.warn{color:#b66b00}.muted{color:var(--ink-4)}.warning-box{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;padding:14px 16px;border:1px solid #f2d29a;border-radius:14px;background:#fff8e8;color:#80520b;font-size:12px}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px;align-items:start}.stack{display:flex;flex-direction:column;gap:16px}.panel{padding:20px}.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fields.top{margin-top:18px}.wide{grid-column:1/-1}.event-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.event-tags span{padding:7px 9px;border-radius:999px;font-size:10.5px}.event-tags .ready{background:#eaf8ee;color:#23763a}.event-tags .missing{background:#fff0ed;color:#a64232}.switch input{display:none}.switch span{display:block;width:46px;height:26px;padding:3px;border-radius:999px;background:#bbb;transition:.2s}.switch span:after{content:'';display:block;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s}.switch input:checked+span{background:var(--accent)}.switch input:checked+span:after{transform:translateX(20px)}.oauth-panel{overflow:hidden}.oauth-ready{display:flex;flex-direction:column;gap:6px;margin-top:16px;padding:16px;border-radius:14px;background:#edf9f0}.oauth-ready strong{color:#238541}.oauth-ready span,.oauth-ready small{color:var(--ink-3);font-size:12px}.oauth-qr{display:grid;grid-template-columns:210px minmax(0,1fr);gap:20px;align-items:center;margin-top:16px;padding:18px;border-radius:16px;background:var(--bg-sunken)}.oauth-qr img{width:210px;height:210px;object-fit:contain;border-radius:12px;background:#fff}.oauth-qr div{display:flex;flex-direction:column;gap:9px}.oauth-qr span,.oauth-qr a,.oauth-qr small{font-size:12px}.oauth-qr a{color:var(--accent)}.oauth-qr small{color:var(--ink-4);line-height:1.6}.oauth-empty{margin:16px 0 0;padding:15px;border-radius:13px;background:var(--bg-sunken);color:var(--ink-3);font-size:12px}.advanced{padding:12px;border:1px solid var(--line);border-radius:13px}.advanced summary{cursor:pointer;font-weight:700}.advanced-grid{display:grid;grid-template-columns:1fr 180px;gap:12px;margin-top:14px}.test-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;margin-top:16px}.test-total{color:var(--ink-3);font-size:12px}.result-row{display:flex;flex-direction:column;gap:4px;padding:11px 0;border-bottom:1px solid var(--line)}.result-row span,.result-row small{color:var(--ink-4);font-size:11px;word-break:break-all}.flow>div{display:grid;grid-template-columns:24px 1fr;gap:9px;margin-top:13px;align-items:start}.flow>div b{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:11px}.flow>div span{font-size:12px;line-height:1.6}.flow>small{display:block;margin-top:15px;color:var(--ink-4);font-size:11px;line-height:1.6}.log-row{display:flex;flex-direction:column;gap:4px;padding:11px 0;border-bottom:1px solid var(--line)}.log-row>span{display:flex;justify-content:space-between;gap:10px}.log-row em{font-style:normal;font-size:10px}.log-row em.success{color:#238541}.log-row em.failed{color:var(--danger)}.log-row small,.log-row time{color:var(--ink-4);font-size:10.5px;word-break:break-all}.empty-small{padding:24px 0;color:var(--ink-4);text-align:center}.notice{margin-top:14px}.notice.ok{color:#238541}.notice.error{color:var(--danger)}@media(max-width:1020px){.summary-grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:1fr 1fr}}@media(max-width:680px){.summary-grid,.fields,.advanced-grid,.side,.oauth-qr{grid-template-columns:1fr}.oauth-qr img{width:min(100%,260px);height:auto;aspect-ratio:1}.section-head{flex-direction:column}.test-row{grid-template-columns:1fr}}
 </style>
