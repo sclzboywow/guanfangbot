@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import bots, events, group_moderation, group_verification, library_delivery, qqbot
+from app.services.log_retention import install_log_retention
 
 settings = get_settings()
+install_log_retention()
 app = FastAPI(title="QQ Bot Admin Starter API", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
