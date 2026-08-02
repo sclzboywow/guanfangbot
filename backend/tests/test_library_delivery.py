@@ -1,11 +1,15 @@
 import asyncio
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
 
+from app.config import Settings
+from app.services.baidu_oauth_repository import BaiduOAuthRepository
+from app.services.baidu_oauth_service import BaiduOAuthService
 from app.services.baidu_pan_client import BaiduPanShareClient, generate_share_password
 from app.services.library_catalog import inspect_catalog, search_catalog
 from app.services.library_delivery_repository import LibraryDeliveryRepository
@@ -44,6 +48,15 @@ def settings_for(path: Path) -> dict[str, object]:
     }
 
 
+def oauth_settings() -> Settings:
+    return Settings(
+        baidu_pan_app_key="app-key",
+        baidu_pan_secret_key="secret-key",
+        baidu_oauth_base="https://openapi.baidu.com",
+        baidu_oauth_timeout=5,
+    )
+
+
 def test_catalog_reports_total_and_returns_first_five(tmp_path: Path) -> None:
     catalog = tmp_path / "标准库.sqlite3"
     create_catalog(catalog)
@@ -60,14 +73,8 @@ def test_search_query_removes_qq_mention_and_whitespace() -> None:
     assert extract_search_query("@机器人： 企业开办") == "企业开办"
 
 
-def test_repository_keeps_token_private_and_sessions_scoped(tmp_path: Path) -> None:
+def test_repository_sessions_are_scoped(tmp_path: Path) -> None:
     repository = LibraryDeliveryRepository(tmp_path / "state.db")
-    repository.update_settings("bot-1", access_token="secret-token", enabled=True)
-    assert repository.get_private_settings("bot-1")["access_token"] == "secret-token"
-    public = repository.get_public_settings("bot-1")
-    assert "access_token" not in public
-    assert public["access_token_configured"] is True
-
     session = repository.create_session(
         bot_id="bot-1", group_openid="group-a", member_openid="member-a",
         query="不动产", total_count=1,
@@ -115,6 +122,97 @@ def test_baidu_share_client_sends_strict_fsid_json() -> None:
     assert json.loads(captured["form"]["fsid_list"][0]) == ["543379444407161"]
 
 
+def test_device_code_oauth_saves_tokens_without_exposing_them(tmp_path: Path) -> None:
+    repository = BaiduOAuthRepository(tmp_path / "oauth.db")
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/oauth/2.0/device/code":
+            return httpx.Response(200, json={
+                "device_code": "device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_url": "https://openapi.baidu.com/device",
+                "qrcode_url": "https://openapi.baidu.com/oauth/2.0/qrcode/test",
+                "expires_in": 300,
+                "interval": 3,
+            })
+        if request.url.path == "/oauth/2.0/token":
+            assert request.url.params["grant_type"] == "device_token"
+            assert request.url.params["client_id"] == "app-key"
+            assert request.url.params["client_secret"] == "secret-key"
+            return httpx.Response(200, json={
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "expires_in": 2592000,
+                "scope": "basic netdisk",
+            })
+        return httpx.Response(404)
+
+    service = BaiduOAuthService(
+        repository=repository,
+        settings=oauth_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def run_flow() -> tuple[dict, dict]:
+        session = await service.start_authorization("bot-1")
+        with sqlite3.connect(repository.path) as connection:
+            connection.execute(
+                "UPDATE baidu_oauth_sessions SET next_poll_at = ? WHERE id = ?",
+                ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), session["session_id"]),
+            )
+        polled = await service.poll_authorization(session["session_id"])
+        return session, polled
+
+    session, polled = asyncio.run(run_flow())
+    assert session["qr_image_url"].startswith("/api/library-delivery/oauth/qr/")
+    assert polled["authorized"] is True
+    private = repository.get_tokens()
+    assert private["access_token"] == "access-secret"
+    assert private["refresh_token"] == "refresh-secret"
+    public = service.public_status()
+    assert public["authorized"] is True
+    assert "access_token" not in public
+    assert "refresh_token" not in public
+    assert calls == ["/oauth/2.0/device/code", "/oauth/2.0/token"]
+
+
+def test_oauth_refreshes_expired_access_token(tmp_path: Path) -> None:
+    repository = BaiduOAuthRepository(tmp_path / "oauth.db")
+    repository.save_tokens(
+        access_token="old-access",
+        refresh_token="refresh-secret",
+        expires_in=60,
+        scope="basic netdisk",
+    )
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute(
+            "UPDATE baidu_oauth_tokens SET expires_at = ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+        )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/oauth/2.0/token"
+        assert request.url.params["grant_type"] == "refresh_token"
+        assert request.url.params["refresh_token"] == "refresh-secret"
+        return httpx.Response(200, json={
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 2592000,
+            "scope": "basic netdisk",
+        })
+
+    service = BaiduOAuthService(
+        repository=repository,
+        settings=oauth_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+    token = asyncio.run(service.get_access_token())
+    assert token == "new-access"
+    assert repository.get_tokens()["refresh_token"] == "new-refresh"
+
+
 class FakeQQClient:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -136,7 +234,13 @@ class FakeShareClient:
             "link": "https://pan.baidu.com/s/1example",
             "pwd": "a1b2",
             "period": 7,
+            "auth_error": False,
         }
+
+
+class FakeOAuthService:
+    async def get_access_token(self, force_refresh: bool = False) -> str:
+        return "backend-managed-token"
 
 
 def test_search_then_plain_number_creates_one_share(tmp_path: Path) -> None:
@@ -144,7 +248,7 @@ def test_search_then_plain_number_creates_one_share(tmp_path: Path) -> None:
     create_catalog(catalog, count=6)
     repository = LibraryDeliveryRepository(tmp_path / "state.db")
     repository.update_settings(
-        "bot-test", enabled=True, access_token="token",
+        "bot-test", enabled=True,
         database_path=str(catalog), table_name="新网盘资料",
         title_column="标题", category_column="分类", size_column="大小",
         fsid_column="fsid", path_column="网盘地址", share_period=7,
@@ -156,7 +260,7 @@ def test_search_then_plain_number_creates_one_share(tmp_path: Path) -> None:
     async def qq_provider(bot_id: str):
         return qq
 
-    service = LibraryDeliveryService(repository, share, qq_provider)
+    service = LibraryDeliveryService(repository, share, qq_provider, FakeOAuthService())  # type: ignore[arg-type]
     search_payload = {
         "id": "event-search",
         "d": {
