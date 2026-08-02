@@ -157,6 +157,60 @@ class GroupModerationSettingsUpdate(BaseModel):
         return cleaned
 
 
+class LibraryDeliverySettingsUpdate(BaseModel):
+    enabled: bool = False
+    database_path: str = Field(default="/app/data/library.sqlite3", min_length=1, max_length=2048)
+    table_name: str = Field(default="新网盘资料", min_length=1, max_length=128)
+    title_column: str = Field(default="标题", min_length=1, max_length=128)
+    category_column: str = Field(default="分类", min_length=1, max_length=128)
+    size_column: str = Field(default="大小", min_length=1, max_length=128)
+    fsid_column: str = Field(default="fsid", min_length=1, max_length=128)
+    path_column: str = Field(default="网盘地址", min_length=1, max_length=128)
+    access_token: str | None = Field(default=None, max_length=8192)
+    clear_access_token: bool = False
+    share_period: Literal[0, 1, 7, 30] = 7
+    session_ttl_seconds: int = Field(default=180, ge=30, le=1800)
+    api_url: str = Field(default="https://pan.baidu.com/rest/2.0/xpan/share", min_length=1, max_length=2048)
+    api_method: str = Field(default="rapidshare", min_length=1, max_length=64)
+
+    @field_validator(
+        "database_path", "table_name", "title_column", "category_column",
+        "size_column", "fsid_column", "path_column", "api_method",
+    )
+    @classmethod
+    def clean_text_fields(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or "\x00" in cleaned:
+            raise ValueError("配置内容不能为空或包含空字符")
+        return cleaned
+
+    @field_validator("access_token")
+    @classmethod
+    def clean_access_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @field_validator("api_url")
+    @classmethod
+    def validate_api_url(cls, value: str) -> str:
+        cleaned = value.strip()
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("百度分享接口地址必须是完整的 http/https URL")
+        return cleaned
+
+
+class LibrarySearchTestRequest(BaseModel):
+    bot_id: str = Field(min_length=1, max_length=128)
+    keyword: str = Field(min_length=1, max_length=100)
+
+    @field_validator("bot_id", "keyword")
+    @classmethod
+    def clean_search_fields(cls, value: str) -> str:
+        return " ".join(value.split()).strip()
+
+
 class OpenApiRequest(BaseModel):
     bot_id: str
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
