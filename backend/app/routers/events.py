@@ -106,11 +106,10 @@ async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str
 
 
 async def _persist_chat_and_ai(bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
-    """Persist C2C state before acknowledging QQ so AI jobs survive restarts."""
-    if event_type not in CHAT_EVENTS:
-        return
-    await chat_service.handle_event(bot_id, event_type, payload)
-    if event_type == "C2C_MESSAGE_CREATE":
+    """Persist C2C state / enqueue AI before acknowledging QQ so jobs survive restarts."""
+    if event_type in CHAT_EVENTS:
+        await chat_service.handle_event(bot_id, event_type, payload)
+    if event_type in {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
         await ai_reply_service.handle_event(bot_id, event_type, payload)
 
 

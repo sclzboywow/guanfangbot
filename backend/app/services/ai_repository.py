@@ -134,6 +134,18 @@ class AiRepository:
                 END;
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(ai_reply_jobs)").fetchall()
+            }
+            if "channel" not in columns:
+                connection.execute(
+                    "ALTER TABLE ai_reply_jobs ADD COLUMN channel TEXT NOT NULL DEFAULT 'c2c'"
+                )
+            if "group_openid" not in columns:
+                connection.execute(
+                    "ALTER TABLE ai_reply_jobs ADD COLUMN group_openid TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 "UPDATE ai_reply_jobs SET status = 'pending', started_at = NULL, available_at = ? WHERE status = 'running'",
                 (utc_now(),),
@@ -275,18 +287,22 @@ class AiRepository:
         user_openid: str,
         trigger_message_id: str,
         trigger_content: str,
+        channel: str = "c2c",
+        group_openid: str = "",
         delay_seconds: float = 0,
     ) -> dict[str, Any] | None:
         if not trigger_message_id:
             return None
+        channel_name = "group" if channel == "group" else "c2c"
         now = utc_now()
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO ai_reply_jobs (
                     bot_id, owner_user_id, user_openid, trigger_message_id,
-                    trigger_content, status, attempts, available_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                    trigger_content, status, attempts, available_at, created_at,
+                    channel, group_openid
+                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
                 """,
                 (
                     bot_id,
@@ -296,6 +312,8 @@ class AiRepository:
                     trigger_content[:8000],
                     _future(delay_seconds),
                     now,
+                    channel_name,
+                    group_openid if channel_name == "group" else "",
                 ),
             )
             if cursor.rowcount <= 0:

@@ -174,7 +174,11 @@ def bot_ai_status(
         "jobs": ai_repository.list_jobs(bot_id, 40),
         "counts": ai_repository.counts(bot_id),
         "required_event": "C2C_MESSAGE_CREATE",
+        "required_events": ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"],
         "event_configured": "C2C_MESSAGE_CREATE" in set(bot.event_scopes),
+        "group_event_configured": bool(
+            {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"} & set(bot.event_scopes)
+        ),
     }
 
 
@@ -189,8 +193,11 @@ def save_bot_ai_profile(
     if payload.enabled and not ai_repository.credential_status(owner_user_id)["configured"]:
         raise HTTPException(status_code=409, detail="请先保存并验证 DeepSeek API Key")
     profile = ai_repository.save_profile(bot_id, payload.model_dump())
-    if payload.enabled and "C2C_MESSAGE_CREATE" not in set(bot.event_scopes):
-        bot_repository.update(bot_id, BotUpdate(event_scopes=[*bot.event_scopes, "C2C_MESSAGE_CREATE"]))
+    if payload.enabled:
+        needed = ("C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE")
+        missing = [code for code in needed if code not in set(bot.event_scopes)]
+        if missing:
+            bot_repository.update(bot_id, BotUpdate(event_scopes=[*bot.event_scopes, *missing]))
     return {"profile": profile}
 
 

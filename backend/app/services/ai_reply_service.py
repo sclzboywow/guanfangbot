@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 from typing import Any
 
@@ -11,10 +12,20 @@ from app.services.bot_repository import bot_repository
 from app.services.chat_repository import chat_repository
 from app.services.chat_service import extract_message_content, extract_user_openid
 from app.services.deepseek_client import DeepSeekClient, DeepSeekError, DeepSeekReply
+from app.services.group_verification_service import extract_group_openid, extract_member_openid
+from app.services.library_delivery_service import is_bot_mentioned
 from app.services.qqbot_client import client_manager
 
 logger = logging.getLogger(__name__)
 PASSIVE_EXPIRED_CODES = {304103, 40034005, 40034024, 40034128}
+MENTION_TAG_PATTERN = re.compile(r"<@!?[^>]+>")
+LEADING_MENTION_PATTERN = re.compile(r"^\s*[@＠][^\s，,：:]+[\s，,：:]*")
+
+
+def _clean_trigger_text(content: str) -> str:
+    text = MENTION_TAG_PATTERN.sub(" ", str(content or ""))
+    text = LEADING_MENTION_PATTERN.sub("", text, count=1)
+    return " ".join(text.split()).strip()
 
 
 def _error_code(result: dict[str, Any]) -> int:
@@ -65,8 +76,6 @@ class AiReplyService:
             self._worker = None
 
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
-        if event_type != "C2C_MESSAGE_CREATE":
-            return
         profile = self.repository.get_profile(bot_id)
         if not profile.get("enabled"):
             return
@@ -74,17 +83,41 @@ class AiReplyService:
         if not owner_user_id or not self.repository.credential_status(owner_user_id)["configured"]:
             return
         data = payload.get("d") if isinstance(payload.get("d"), dict) else {}
-        user_openid = extract_user_openid(data)
         message_id = str(data.get("id") or "").strip()
-        if not user_openid or not message_id:
+        if not message_id:
             return
-        self.repository.enqueue_job(
-            bot_id=bot_id,
-            owner_user_id=owner_user_id,
-            user_openid=user_openid,
-            trigger_message_id=message_id,
-            trigger_content=extract_message_content(data),
-        )
+
+        if event_type == "C2C_MESSAGE_CREATE":
+            user_openid = extract_user_openid(data)
+            if not user_openid:
+                return
+            self.repository.enqueue_job(
+                bot_id=bot_id,
+                owner_user_id=owner_user_id,
+                user_openid=user_openid,
+                trigger_message_id=message_id,
+                trigger_content=_clean_trigger_text(extract_message_content(data)),
+                channel="c2c",
+            )
+            return
+
+        if event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
+            if event_type == "GROUP_MESSAGE_CREATE" and not is_bot_mentioned(payload):
+                return
+            member_openid = extract_member_openid(payload)
+            group_openid = extract_group_openid(payload)
+            if not member_openid or not group_openid:
+                return
+            trigger_content = _clean_trigger_text(extract_message_content(data)) or "你好"
+            self.repository.enqueue_job(
+                bot_id=bot_id,
+                owner_user_id=owner_user_id,
+                user_openid=member_openid,
+                trigger_message_id=message_id,
+                trigger_content=trigger_content,
+                channel="group",
+                group_openid=group_openid,
+            )
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -122,11 +155,17 @@ class AiReplyService:
             return
         try:
             api_key = decrypt_secret(encrypted)
-            history = chat_repository.list_ai_context(
-                str(job["bot_id"]),
-                str(job["user_openid"]),
-                turns=int(profile.get("context_turns") or 12),
-            )
+            channel = str(job.get("channel") or "c2c")
+            if channel == "group":
+                # 群聊暂不复用好友会话上下文；触发内容直接作为本轮用户消息。
+                trigger = str(job.get("trigger_content") or "").strip()
+                history = [{"role": "user", "content": trigger}] if trigger else []
+            else:
+                history = chat_repository.list_ai_context(
+                    str(job["bot_id"]),
+                    str(job["user_openid"]),
+                    turns=int(profile.get("context_turns") or 12),
+                )
             reply = await DeepSeekClient(api_key).complete(
                 profile=profile,
                 history=history,
@@ -144,10 +183,16 @@ class AiReplyService:
         bot_id = str(job["bot_id"])
         user_openid = str(job["user_openid"])
         trigger_message_id = str(job["trigger_message_id"])
+        channel = str(job.get("channel") or "c2c")
+        group_openid = str(job.get("group_openid") or "")
         client = await client_manager.get(bot_id)
         quote_requested = str(profile.get("reply_mode") or "auto") in {"auto", "quote"}
         fallback_allowed = str(profile.get("reply_mode") or "auto") == "auto" or bool(profile.get("quote_fallback"))
-        base_seq = chat_repository.next_reply_seq(bot_id, trigger_message_id) if quote_requested else 1
+        base_seq = (
+            chat_repository.next_reply_seq(bot_id, trigger_message_id)
+            if quote_requested and channel != "group"
+            else 1
+        )
         latest_qq_message_id = ""
         delivery_modes: list[str] = []
         partial_error = ""
@@ -156,7 +201,9 @@ class AiReplyService:
         if reply.text:
             result, mode = await self._send_text(
                 client=client,
+                channel=channel,
                 user_openid=user_openid,
+                group_openid=group_openid,
                 content=reply.text,
                 trigger_message_id=trigger_message_id,
                 msg_seq=base_seq,
@@ -166,17 +213,18 @@ class AiReplyService:
             status_code = int(result.get("status_code") or 500)
             success = _success(result)
             latest_qq_message_id = _qq_message_id(result)
-            chat_repository.record_outbound(
-                bot_id=bot_id,
-                user_openid=user_openid,
-                content=reply.text,
-                success=success,
-                qq_message_id=latest_qq_message_id,
-                reply_to_msg_id=trigger_message_id if mode == "quote" else "",
-                msg_seq=base_seq if mode == "quote" else None,
-                status_code=status_code,
-                detail="" if success else _error_detail(result),
-            )
+            if channel != "group":
+                chat_repository.record_outbound(
+                    bot_id=bot_id,
+                    user_openid=user_openid,
+                    content=reply.text,
+                    success=success,
+                    qq_message_id=latest_qq_message_id,
+                    reply_to_msg_id=trigger_message_id if mode == "quote" else "",
+                    msg_seq=base_seq if mode == "quote" else None,
+                    status_code=status_code,
+                    detail="" if success else _error_detail(result),
+                )
             if not success:
                 raise DeepSeekError(f"QQ 文本回复失败：{_error_detail(result)}")
             sent_any = True
@@ -185,6 +233,9 @@ class AiReplyService:
                 quote_requested = False
 
         asset = self._resolve_asset(profile, reply.image_key)
+        if asset is not None and channel == "group":
+            partial_error = "群聊暂不支持 AI 图片回复"
+            asset = None
         if asset is not None:
             upload = await client.upload_c2c_media(user_openid, str(asset["url"]), file_type=1)
             if not _success(upload):
@@ -251,13 +302,28 @@ class AiReplyService:
         self,
         *,
         client: Any,
+        channel: str = "c2c",
         user_openid: str,
+        group_openid: str = "",
         content: str,
         trigger_message_id: str,
         msg_seq: int,
         quote_requested: bool,
         fallback_allowed: bool,
     ) -> tuple[dict[str, Any], str]:
+        if channel == "group":
+            if not group_openid:
+                return {"ok": False, "status_code": 400, "detail": "缺少 group_openid"}, "group"
+            # 群聊被动回复必须带 msg_id；过期后无法主动发群消息，故不做 normal 降级。
+            result = await client.send_group_text(
+                group_openid,
+                content,
+                msg_id=trigger_message_id or None,
+                msg_seq=msg_seq,
+                collapse_whitespace=False,
+            )
+            return result, "group_quote" if trigger_message_id else "group"
+
         if not quote_requested:
             return await client.send_c2c_text(user_openid, content), "normal"
         result = await client.send_c2c_text(
@@ -303,25 +369,29 @@ class AiReplyService:
             return
         try:
             client = await client_manager.get(str(job["bot_id"]))
+            channel = str(job.get("channel") or "c2c")
             result, mode = await self._send_text(
                 client=client,
+                channel=channel,
                 user_openid=str(job["user_openid"]),
+                group_openid=str(job.get("group_openid") or ""),
                 content=content,
                 trigger_message_id=str(job["trigger_message_id"]),
                 msg_seq=chat_repository.next_reply_seq(str(job["bot_id"]), str(job["trigger_message_id"])),
                 quote_requested=True,
                 fallback_allowed=True,
             )
-            chat_repository.record_outbound(
-                bot_id=str(job["bot_id"]),
-                user_openid=str(job["user_openid"]),
-                content=content,
-                success=_success(result),
-                qq_message_id=_qq_message_id(result),
-                reply_to_msg_id=str(job["trigger_message_id"]) if mode == "quote" else "",
-                status_code=int(result.get("status_code") or 500),
-                detail=f"AI 回复失败：{error}"[:1200],
-            )
+            if channel != "group":
+                chat_repository.record_outbound(
+                    bot_id=str(job["bot_id"]),
+                    user_openid=str(job["user_openid"]),
+                    content=content,
+                    success=_success(result),
+                    qq_message_id=_qq_message_id(result),
+                    reply_to_msg_id=str(job["trigger_message_id"]) if mode == "quote" else "",
+                    status_code=int(result.get("status_code") or 500),
+                    detail=f"AI 回复失败：{error}"[:1200],
+                )
         except Exception:
             logger.exception("failed to send AI fallback message for job %s", job.get("id"))
 

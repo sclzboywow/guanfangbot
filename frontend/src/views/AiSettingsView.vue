@@ -190,7 +190,7 @@ onMounted(async () => {
       <div>
         <div class="eyebrow">DEEPSEEK AI COMPANION</div>
         <h1>AI 身份与自动回复</h1>
-        <p>每个登录用户提供自己的 DeepSeek Key；每个机器人只保存一套独立身份和回复策略。</p>
+        <p>每个登录用户提供自己的 DeepSeek Key；启用后支持私聊与群内 @ 机器人自动回复。</p>
       </div>
       <div class="head-actions">
         <select v-model="botId" class="input bot-select">
@@ -214,7 +214,11 @@ onMounted(async () => {
         <article class="metric card">
           <span>自动回复</span>
           <strong>{{ profile.enabled ? '已启用' : '已关闭' }}</strong>
-          <small>{{ status?.event_configured ? 'C2C 事件已记录' : '需在 QQ 管理端开通 C2C_MESSAGE_CREATE' }}</small>
+          <small>
+            {{ status?.event_configured ? '私聊事件已记录' : '需开通 C2C_MESSAGE_CREATE' }}
+            ·
+            {{ status?.group_event_configured ? '群 @ 事件已记录' : '群 @ 需开通 GROUP_AT / GROUP_MESSAGE' }}
+          </small>
         </article>
         <article class="metric card">
           <span>DeepSeek Key</span>

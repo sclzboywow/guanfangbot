@@ -113,6 +113,26 @@ def test_deepseek_json_plan_filters_unknown_image_key() -> None:
     assert reply.total_tokens == 14
 
 
+def test_enqueue_group_job(tmp_path) -> None:
+    from app.services.ai_reply_service import _clean_trigger_text
+
+    assert _clean_trigger_text("<@!12345>  你好呀") == "你好呀"
+    repository = AiRepository(tmp_path / "ai.db")
+    job = repository.enqueue_job(
+        bot_id="bot-1",
+        owner_user_id="user-1",
+        user_openid="member-1",
+        trigger_message_id="g-msg-1",
+        trigger_content=_clean_trigger_text("<@!bot> 帮我看看"),
+        channel="group",
+        group_openid="group-1",
+    )
+    assert job is not None
+    assert job["channel"] == "group"
+    assert job["group_openid"] == "group-1"
+    assert job["trigger_content"] == "帮我看看"
+
+
 def test_qq_c2c_media_uses_upload_then_msg_type_seven() -> None:
     captured = []
 
