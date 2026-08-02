@@ -66,10 +66,16 @@ def event_status(bot_id: str = Query(...)) -> dict[str, Any]:
 
 
 def _resolve_credentials(app_id: str | None) -> tuple[str, str, str] | None:
-    if app_id:
-        credentials = bot_repository.get_credentials_by_app_id(app_id)
-        if credentials is not None:
-            return credentials
+    """Resolve bot credentials for a webhook callback.
+
+    When the callback path/header carries an explicit AppID, only that bot's
+    secret may be used. Falling back to "the only configured bot" would sign
+    validation challenges with the wrong key and QQ reports 签名校验不通过.
+    The single-bot fallback remains only for the legacy `/callback` entry.
+    """
+    cleaned = str(app_id or "").strip()
+    if cleaned:
+        return bot_repository.get_credentials_by_app_id(cleaned)
 
     configured = [bot for bot in bot_repository.list() if bot.has_secret and bot.app_id]
     if len(configured) == 1:
@@ -109,9 +115,16 @@ async def _receive_event(
         or request.headers.get("x-bot-appid")
         or ""
     ).strip()
-    credentials = _resolve_credentials(app_id or header_app_id)
+    path_app_id = str(app_id or "").strip()
+    requested_app_id = path_app_id or header_app_id
+    credentials = _resolve_credentials(requested_app_id or None)
     if credentials is None:
-        raise HTTPException(status_code=404, detail="未找到对应 AppID 的机器人凭证")
+        detail = (
+            f"未找到 AppID {requested_app_id} 的机器人凭证；请先在管理台添加该机器人并填写正确 AppSecret"
+            if requested_app_id
+            else "未找到对应 AppID 的机器人凭证"
+        )
+        raise HTTPException(status_code=404, detail=detail)
 
     bot_id, resolved_app_id, secret = credentials
     op = payload.get("op")

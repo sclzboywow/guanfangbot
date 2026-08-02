@@ -89,7 +89,7 @@ onMounted(() => store.load())
         <div class="modal-head"><div><h2>新增机器人</h2><p>填写开放平台中的三项接入信息。</p></div><button type="button" @click="showCreate = false">×</button></div>
         <div class="field"><label>AppID</label><input v-model="appId" class="input mono" autocomplete="off" /></div>
         <div class="field"><label>AppSecret / Key</label><input v-model="key" class="input mono" type="password" autocomplete="new-password" /></div>
-        <div class="field"><label>回调地址</label><input v-model="callbackUrl" class="input mono" autocomplete="off" /><small>推荐：{{ suggestedCallback }}</small></div>
+        <div class="field"><label>回调地址</label><input v-model="callbackUrl" class="input mono" autocomplete="off" /><small>推荐：{{ suggestedCallback }}。请先在本台保存 AppID/AppSecret，再去开放平台粘贴该地址做校验。</small></div>
         <p v-if="error" class="error">{{ error }}</p>
         <div class="actions"><button class="btn" type="button" @click="showCreate = false">取消</button><button class="btn primary" :disabled="creating || !appId.trim() || !key.trim() || !callbackUrl.trim()">{{ creating ? '保存中…' : '保存并进入开发' }}</button></div>
       </form>

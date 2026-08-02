@@ -99,7 +99,7 @@ onMounted(load)
           <div class="fields">
             <div class="field"><label>AppID</label><input v-model="appId" class="input mono" /></div>
             <div class="field"><label>AppSecret / Key</label><input v-model="key" class="input mono" type="password" :placeholder="bot.has_secret ? '已保存，留空不修改' : '请输入 Key'" /></div>
-            <div class="field"><label>回调地址</label><div class="input-row"><input v-model="callbackUrl" class="input mono" /><button class="btn" @click="copy(callbackUrl)">复制</button></div><small>推荐：{{ suggestedCallback }}</small></div>
+            <div class="field"><label>回调地址</label><div class="input-row"><input v-model="callbackUrl" class="input mono" /><button class="btn" @click="copy(callbackUrl)">复制</button></div><small>推荐：{{ suggestedCallback }}。须与上方 AppID 一致，且 AppSecret 已保存后，再到开放平台校验。</small></div>
           </div>
           <div class="actions"><button class="btn" @click="callbackUrl = suggestedCallback">使用推荐地址</button><button class="btn primary" :disabled="busy || !appId.trim() || !callbackUrl.trim()" @click="save">{{ busy ? '处理中…' : '保存配置' }}</button></div>
         </section>
