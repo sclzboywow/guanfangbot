@@ -7,6 +7,7 @@ import RobotMark from '@/components/RobotMark.vue'
 const mobileOpen = ref(false)
 const coreLinks = [
   { to: '/bots', label: '我的机器人', icon: 'bot' },
+  { to: '/chat', label: '好友聊天', icon: 'users' },
   { to: '/events', label: '事件调试', icon: 'events' },
   { to: '/api-console', label: 'OpenAPI 调试', icon: 'terminal' },
 ]
@@ -51,7 +52,7 @@ const featureLinks = [
 
       <div class="sidebar-summary">
         <strong>开发控制台</strong>
-        <span>凭证、回调、事件、功能与接口调试</span>
+        <span>凭证、聊天、回调、事件、功能与接口调试</span>
       </div>
     </aside>
     <div v-if="mobileOpen" class="mask" @click="mobileOpen = false"></div>
