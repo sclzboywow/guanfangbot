@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.models.schemas import BotUpdate, LibraryDeliverySettingsUpdate, LibrarySearchTestRequest
+from app.services.baidu_oauth_service import BaiduOAuthError, baidu_oauth_service
 from app.services.bot_repository import bot_repository
 from app.services.library_catalog import LibraryCatalogError, inspect_catalog, search_catalog
 from app.services.library_delivery_repository import library_delivery_repository
@@ -38,6 +39,7 @@ def _status_payload(bot_id: str) -> dict[str, Any]:
         "app_id": bot.app_id,
         "bot_name": bot.name,
         "settings": settings,
+        "oauth": baidu_oauth_service.public_status(),
         "database": _database_status(settings),
         "required_events": [
             {"code": code, "configured": code in configured}
@@ -52,6 +54,7 @@ def _status_payload(bot_id: str) -> dict[str, Any]:
             "max_results": 5,
             "session_one_use": True,
             "outbound_messages_single_line": True,
+            "baidu_account_scope": "single_backend_account",
         },
     }
 
@@ -83,3 +86,35 @@ def test_library_search(payload: LibrarySearchTestRequest) -> dict[str, Any]:
     except LibraryCatalogError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"keyword": payload.keyword, "total_count": total, "results": results}
+
+
+@router.post("/oauth/start")
+async def start_baidu_oauth(bot_id: str = Query(...)) -> dict[str, Any]:
+    _require_bot(bot_id)
+    try:
+        session = await baidu_oauth_service.start_authorization(bot_id)
+    except BaiduOAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"oauth": baidu_oauth_service.public_status(), "session": session}
+
+
+@router.post("/oauth/poll/{session_id}")
+async def poll_baidu_oauth(session_id: str) -> dict[str, Any]:
+    try:
+        session = await baidu_oauth_service.poll_authorization(session_id)
+    except BaiduOAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"oauth": baidu_oauth_service.public_status(), "session": session}
+
+
+@router.get("/oauth/qr/{session_id}")
+async def baidu_oauth_qr(session_id: str) -> Response:
+    try:
+        content, content_type = await baidu_oauth_service.fetch_qr_image(session_id)
+    except BaiduOAuthError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff"},
+    )
