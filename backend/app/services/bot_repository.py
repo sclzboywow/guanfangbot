@@ -74,6 +74,7 @@ class BotRepository:
             updated_at=str(record.get("updated_at") or date.today().isoformat()),
             callback_url=str(record.get("callback_url") or ""),
             event_scopes=list(record.get("event_scopes") or []),
+            owner_user_id=str(record.get("owner_user_id") or ""),
         )
 
     def _find_by_app_id(self, app_id: str, *, exclude_bot_id: str | None = None) -> str | None:
@@ -84,14 +85,46 @@ class BotRepository:
                 return bot_id
         return None
 
-    def list(self) -> list[BotPublic]:
+    def list(self, *, owner_user_id: str | None = None, include_all: bool = False) -> list[BotPublic]:
         with self._lock:
-            return [self._to_public(item) for item in self._bots.values()]
+            items = list(self._bots.values())
+            if not include_all and owner_user_id is not None:
+                items = [item for item in items if str(item.get("owner_user_id") or "") == owner_user_id]
+            return [self._to_public(item) for item in items]
 
     def get(self, bot_id: str) -> BotPublic | None:
         with self._lock:
             record = self._bots.get(bot_id)
             return self._to_public(record) if record else None
+
+    def get_owner_user_id(self, bot_id: str) -> str | None:
+        with self._lock:
+            record = self._bots.get(bot_id)
+            if record is None:
+                return None
+            owner = str(record.get("owner_user_id") or "").strip()
+            return owner or None
+
+    def list_ids_for_owner(self, owner_user_id: str, *, include_all: bool = False) -> set[str]:
+        with self._lock:
+            if include_all:
+                return set(self._bots.keys())
+            return {
+                bot_id
+                for bot_id, record in self._bots.items()
+                if str(record.get("owner_user_id") or "") == owner_user_id
+            }
+
+    def assign_missing_owners(self, owner_user_id: str) -> int:
+        with self._lock:
+            changed = 0
+            for record in self._bots.values():
+                if not str(record.get("owner_user_id") or "").strip():
+                    record["owner_user_id"] = owner_user_id
+                    changed += 1
+            if changed:
+                self._persist()
+            return changed
 
     def get_credentials(self, bot_id: str) -> tuple[str, str] | None:
         with self._lock:
@@ -131,7 +164,10 @@ class BotRepository:
             }
             return verified_at, observed
 
-    def create(self, payload: BotCreate) -> BotPublic:
+    def create(self, payload: BotCreate, *, owner_user_id: str) -> BotPublic:
+        owner = owner_user_id.strip()
+        if not owner:
+            raise ValueError("缺少机器人归属用户")
         with self._lock:
             if self._find_by_app_id(payload.app_id) is not None:
                 raise ValueError("该 AppID 已经存在")
@@ -151,6 +187,7 @@ class BotRepository:
                 "event_scopes": [],
                 "callback_verified_at": "",
                 "observed_events": {},
+                "owner_user_id": owner,
             }
             self._bots[bot_id] = record
             self._persist()

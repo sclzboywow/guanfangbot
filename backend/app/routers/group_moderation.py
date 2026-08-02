@@ -2,21 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models.schemas import BotUpdate, GroupModerationSettingsUpdate
+from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.group_moderation_repository import group_moderation_repository
 from app.services.group_moderation_service import REQUIRED_EVENTS
 
 router = APIRouter(prefix="/group-moderation", tags=["group-moderation"])
-
-
-def _require_bot(bot_id: str):
-    bot = bot_repository.get(bot_id)
-    if bot is None:
-        raise HTTPException(status_code=404, detail="机器人不存在")
-    return bot
 
 
 def _require_member(member_id: str) -> dict[str, Any]:
@@ -26,8 +20,8 @@ def _require_member(member_id: str) -> dict[str, Any]:
     return member
 
 
-def _status_payload(bot_id: str) -> dict[str, Any]:
-    bot = _require_bot(bot_id)
+def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
+    bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
     return {
         "bot_id": bot.id,
@@ -52,66 +46,75 @@ def _status_payload(bot_id: str) -> dict[str, Any]:
 
 
 @router.get("/status")
-def moderation_status(bot_id: str = Query(...)) -> dict[str, Any]:
-    return _status_payload(bot_id)
+def moderation_status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    return _status_payload(bot_id, user)
 
 
 @router.put("/settings/{bot_id}")
 def update_moderation_settings(
     bot_id: str,
     payload: GroupModerationSettingsUpdate,
+    user: AuthUser = Depends(require_user),
 ) -> dict[str, Any]:
-    bot = _require_bot(bot_id)
+    bot = require_owned_bot(bot_id, user)
     if payload.enabled:
         selected = list(dict.fromkeys([*bot.event_scopes, *REQUIRED_EVENTS]))
         bot_repository.update(bot_id, BotUpdate(event_scopes=selected))
     group_moderation_repository.update_settings(bot_id, **payload.model_dump())
-    return _status_payload(bot_id)
+    return _status_payload(bot_id, user)
 
 
 @router.post("/members/{member_id}/release")
-def release_member(member_id: str, reset_strikes: bool = Query(default=False)) -> dict[str, Any]:
+def release_member(
+    member_id: str,
+    reset_strikes: bool = Query(default=False),
+    user: AuthUser = Depends(require_user),
+) -> dict[str, Any]:
     member = _require_member(member_id)
+    require_owned_bot(str(member["bot_id"]), user)
     group_moderation_repository.release_member(member_id, reset_strikes=reset_strikes)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
         group_openid=str(member["group_openid"]), member_openid=str(member["member_openid"]),
         action="manual_release_reset" if reset_strikes else "manual_release", success=True,
     )
-    return _status_payload(str(member["bot_id"]))
+    return _status_payload(str(member["bot_id"]), user)
 
 
 @router.post("/members/{member_id}/permanent")
-def make_member_permanent(member_id: str) -> dict[str, Any]:
+def make_member_permanent(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     member = _require_member(member_id)
+    require_owned_bot(str(member["bot_id"]), user)
     group_moderation_repository.make_permanent(member_id)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
         group_openid=str(member["group_openid"]), member_openid=str(member["member_openid"]),
         action="manual_permanent", success=True,
     )
-    return _status_payload(str(member["bot_id"]))
+    return _status_payload(str(member["bot_id"]), user)
 
 
 @router.post("/members/{member_id}/trust")
-def trust_member(member_id: str) -> dict[str, Any]:
+def trust_member(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     member = _require_member(member_id)
+    require_owned_bot(str(member["bot_id"]), user)
     group_moderation_repository.set_trusted(member_id, True)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
         group_openid=str(member["group_openid"]), member_openid=str(member["member_openid"]),
         action="manual_trust", success=True,
     )
-    return _status_payload(str(member["bot_id"]))
+    return _status_payload(str(member["bot_id"]), user)
 
 
 @router.post("/members/{member_id}/untrust")
-def untrust_member(member_id: str) -> dict[str, Any]:
+def untrust_member(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     member = _require_member(member_id)
+    require_owned_bot(str(member["bot_id"]), user)
     group_moderation_repository.set_trusted(member_id, False)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
         group_openid=str(member["group_openid"]), member_openid=str(member["member_openid"]),
         action="manual_untrust", success=True,
     )
-    return _status_payload(str(member["bot_id"]))
+    return _status_payload(str(member["bot_id"]), user)

@@ -37,17 +37,34 @@ def extract_user_openid(data: dict[str, Any]) -> str:
 
 
 def extract_display_name(data: dict[str, Any]) -> str:
+    """Best-effort nickname from C2C / friend events.
+
+    QQ often omits username in C2C_MESSAGE_CREATE; there is also no OpenAPI to
+    resolve a nickname from user_openid. We accept any of the common fields when present.
+    """
     author = data.get("author") if isinstance(data.get("author"), dict) else {}
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    member = data.get("member") if isinstance(data.get("member"), dict) else {}
+    member_user = member.get("user") if isinstance(member.get("user"), dict) else {}
     return _first_text(
         author.get("username"),
         author.get("nickname"),
+        author.get("nick"),
+        author.get("remark"),
         author.get("name"),
         data.get("username"),
         data.get("nickname"),
+        data.get("nick"),
+        data.get("remark"),
         user.get("username"),
         user.get("nickname"),
+        user.get("nick"),
         user.get("name"),
+        member.get("nick"),
+        member.get("nickname"),
+        member.get("username"),
+        member_user.get("username"),
+        member_user.get("nickname"),
     )[:80]
 
 

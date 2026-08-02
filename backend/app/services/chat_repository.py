@@ -131,6 +131,21 @@ class ChatRepository:
             ).fetchone()
             return self._contact_dict(row)
 
+    def set_display_name(self, bot_id: str, user_openid: str, display_name: str) -> dict[str, Any] | None:
+        cleaned = " ".join(str(display_name or "").split()).strip()[:80]
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_contacts
+                SET display_name = ?, updated_at = ?
+                WHERE bot_id = ? AND user_openid = ?
+                """,
+                (cleaned, utc_now(), bot_id, user_openid),
+            )
+            if cursor.rowcount <= 0:
+                return None
+        return self.get_contact(bot_id, user_openid)
+
     def list_contacts(self, bot_id: str, limit: int = 500) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(

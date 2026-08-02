@@ -42,7 +42,7 @@ def _allowed_baidu_host(hostname: str | None) -> bool:
 
 
 class BaiduOAuthService:
-    """Owns one server-side Baidu Netdisk authorization for all library delivery users."""
+    """Owns server-side Baidu Netdisk authorization tokens per owner user."""
 
     def __init__(
         self,
@@ -86,13 +86,13 @@ class BaiduOAuthService:
             data = {"raw": data}
         return response.status_code, data
 
-    def public_status(self) -> dict[str, Any]:
-        tokens = self.repository.get_tokens()
+    def public_status(self, owner_user_id: str) -> dict[str, Any]:
+        tokens = self.repository.get_tokens(owner_user_id)
         access_token = str(tokens.get("access_token") or "")
         refresh_token = str(tokens.get("refresh_token") or "")
         expires_at = parse_time(tokens.get("expires_at"))
         access_valid = bool(access_token and (expires_at is None or expires_at > utc_now_dt()))
-        pending = self.repository.latest_pending_session()
+        pending = self.repository.latest_pending_session(owner_user_id)
         return {
             "app_configured": self.app_configured,
             "authorized": bool(access_valid or refresh_token),
@@ -119,7 +119,7 @@ class BaiduOAuthService:
             "last_error": str(session.get("last_error") or ""),
         }
 
-    async def start_authorization(self, requested_by_bot_id: str) -> dict[str, Any]:
+    async def start_authorization(self, requested_by_bot_id: str, owner_user_id: str) -> dict[str, Any]:
         app_key, _ = self._require_app()
         status_code, data = await self._oauth_get(
             "/oauth/2.0/device/code",
@@ -130,6 +130,7 @@ class BaiduOAuthService:
             raise BaiduOAuthError(_error_detail(data, "无法获取百度网盘授权二维码"))
         session = self.repository.create_session(
             requested_by_bot_id=requested_by_bot_id,
+            owner_user_id=owner_user_id,
             device_code=device_code,
             user_code=str(data.get("user_code") or ""),
             verification_url=str(data.get("verification_url") or ""),
@@ -180,7 +181,11 @@ class BaiduOAuthService:
         )
         access_token = str(data.get("access_token") or "").strip()
         if access_token:
+            owner_user_id = str(session.get("owner_user_id") or "").strip()
+            if not owner_user_id:
+                raise BaiduOAuthError("授权会话缺少归属用户")
             self.repository.save_tokens(
+                owner_user_id,
                 access_token=access_token,
                 refresh_token=str(data.get("refresh_token") or ""),
                 expires_in=int(data.get("expires_in") or 2592000),
@@ -224,9 +229,9 @@ class BaiduOAuthService:
         public["authorized"] = False
         return public
 
-    async def _refresh_access_token(self) -> str:
+    async def _refresh_access_token(self, owner_user_id: str) -> str:
         app_key, secret_key = self._require_app()
-        tokens = self.repository.get_tokens()
+        tokens = self.repository.get_tokens(owner_user_id)
         refresh_token = str(tokens.get("refresh_token") or "").strip()
         if not refresh_token:
             raise BaiduOAuthError("百度网盘授权不可刷新，请重新扫码授权")
@@ -243,6 +248,7 @@ class BaiduOAuthService:
         if status_code >= 400 or not access_token:
             raise BaiduOAuthError(_error_detail(data, "刷新百度网盘授权失败，请重新扫码授权"))
         self.repository.save_tokens(
+            owner_user_id,
             access_token=access_token,
             refresh_token=str(data.get("refresh_token") or refresh_token),
             expires_in=int(data.get("expires_in") or 2592000),
@@ -250,15 +256,15 @@ class BaiduOAuthService:
         )
         return access_token
 
-    async def get_access_token(self, force_refresh: bool = False) -> str:
-        tokens = self.repository.get_tokens()
+    async def get_access_token(self, owner_user_id: str, force_refresh: bool = False) -> str:
+        tokens = self.repository.get_tokens(owner_user_id)
         token = str(tokens.get("access_token") or "").strip()
         expires_at = parse_time(tokens.get("expires_at"))
         now = utc_now_dt()
         if not force_refresh and token and (expires_at is None or expires_at > now + timedelta(minutes=5)):
             return token
         async with self._refresh_lock:
-            tokens = self.repository.get_tokens()
+            tokens = self.repository.get_tokens(owner_user_id)
             token = str(tokens.get("access_token") or "").strip()
             expires_at = parse_time(tokens.get("expires_at"))
             now = utc_now_dt()
@@ -266,7 +272,7 @@ class BaiduOAuthService:
                 return token
             if not token and not str(tokens.get("refresh_token") or "").strip():
                 raise BaiduOAuthError("百度网盘尚未扫码授权")
-            return await self._refresh_access_token()
+            return await self._refresh_access_token(owner_user_id)
 
     async def fetch_qr_image(self, session_id: str) -> tuple[bytes, str]:
         session = self.repository.get_session(session_id)

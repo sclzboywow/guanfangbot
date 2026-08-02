@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+import { request } from '@/services/http'
 
 export interface LibraryDeliverySettings {
   bot_id: string
@@ -104,31 +104,6 @@ export interface LibraryDeliverySettingsPayload {
   session_ttl_seconds: number
   api_url: string
   api_method: string
-}
-
-function errorMessage(data: unknown, status: number): string {
-  if (data && typeof data === 'object' && 'detail' in data) {
-    const detail = (data as { detail: unknown }).detail
-    if (typeof detail === 'string') return detail
-    if (Array.isArray(detail)) {
-      return detail.map(item => typeof item === 'object' && item && 'msg' in item
-        ? String((item as { msg: unknown }).msg) : String(item)).join('; ')
-    }
-  }
-  return `请求失败：${status}`
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-  })
-  const contentType = response.headers.get('content-type') || ''
-  const data = contentType.includes('application/json')
-    ? await response.json().catch(() => ({}))
-    : await response.text().catch(() => '')
-  if (!response.ok) throw new Error(errorMessage(data, response.status))
-  return data as T
 }
 
 export const libraryDeliveryApi = {

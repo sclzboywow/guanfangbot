@@ -1,7 +1,7 @@
 import asyncio
 
 from app.services.chat_repository import ChatRepository
-from app.services.chat_service import ChatService, extract_message_content, extract_user_openid
+from app.services.chat_service import ChatService, extract_display_name, extract_message_content, extract_user_openid
 
 
 def test_c2c_message_creates_contact_and_deduplicates(tmp_path) -> None:
@@ -93,3 +93,18 @@ def test_event_extractors_cover_official_c2c_shape() -> None:
     }
     assert extract_user_openid(data) == "openid-1"
     assert extract_message_content(data) == "[附件] photo.png"
+    assert extract_display_name({"author": {"username": "小明", "user_openid": "x"}}) == "小明"
+    assert extract_display_name({"author": {"nick": "备注名"}}) == "备注名"
+
+
+def test_manual_display_name(tmp_path) -> None:
+    repository = ChatRepository(tmp_path / "chat.db")
+    repository.record_inbound(
+        bot_id="bot-1",
+        user_openid="user-1",
+        content="你好",
+        qq_message_id="m1",
+    )
+    updated = repository.set_display_name("bot-1", "user-1", "  小云好友  ")
+    assert updated is not None
+    assert updated["display_name"] == "小云好友"

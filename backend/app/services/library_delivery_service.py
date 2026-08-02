@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable
 
 from app.services.baidu_oauth_service import BaiduOAuthError, BaiduOAuthService, baidu_oauth_service
 from app.services.baidu_pan_client import BaiduPanShareClient, baidu_pan_share_client
+from app.services.bot_repository import BotRepository, bot_repository
 from app.services.group_moderation_repository import group_moderation_repository
 from app.services.group_moderation_service import active_block, utc_now_dt
 from app.services.group_verification_repository import group_verification_repository
@@ -67,11 +68,16 @@ class LibraryDeliveryService:
         share_client: BaiduPanShareClient = baidu_pan_share_client,
         qq_client_provider: Callable[[str], Awaitable[QQBotClient]] | None = None,
         oauth_service: BaiduOAuthService = baidu_oauth_service,
+        bots: BotRepository = bot_repository,
     ) -> None:
         self.repository = repository
         self.share_client = share_client
         self.oauth_service = oauth_service
+        self.bots = bots
         self._qq_client_provider = qq_client_provider or client_manager.get
+
+    def _owner_user_id(self, bot_id: str) -> str | None:
+        return self.bots.get_owner_user_id(bot_id)
 
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if event_type not in REQUIRED_EVENTS or is_bot_author(payload):
@@ -115,6 +121,7 @@ class LibraryDeliveryService:
 
     async def _pick_shareable_results(
         self,
+        bot_id: str,
         candidates: list[dict[str, str]],
         *,
         need: int = SEARCH_RESULT_LIMIT,
@@ -122,8 +129,11 @@ class LibraryDeliveryService:
         """Keep only files that still exist on the authorized Netdisk, refreshing stale fsids."""
         if not candidates or need <= 0:
             return []
+        owner_user_id = self._owner_user_id(bot_id)
         try:
-            token = await self.oauth_service.get_access_token()
+            if not owner_user_id:
+                raise BaiduOAuthError("机器人尚未归属用户，无法读取网盘授权")
+            token = await self.oauth_service.get_access_token(owner_user_id)
         except BaiduOAuthError:
             # Authorization missing: still return hash-path candidates for later share error handling.
             return [
@@ -182,7 +192,7 @@ class LibraryDeliveryService:
             )
             await self._send(bot_id, group_openid, f"没有找到标题包含“{_short_title(query)}”的资料。", msg_id=message_id)
             return
-        results = await self._pick_shareable_results(candidates, need=SEARCH_RESULT_LIMIT)
+        results = await self._pick_shareable_results(bot_id, candidates, need=SEARCH_RESULT_LIMIT)
         if not results:
             self.repository.add_log(
                 bot_id=bot_id, action="search", success=False,
@@ -226,11 +236,15 @@ class LibraryDeliveryService:
 
     async def _create_share_with_refresh(
         self,
+        bot_id: str,
         settings: dict[str, Any],
         fsid: str,
         pan_path: str = "",
     ) -> dict[str, Any]:
-        token = await self.oauth_service.get_access_token()
+        owner_user_id = self._owner_user_id(bot_id)
+        if not owner_user_id:
+            raise BaiduOAuthError("机器人尚未归属用户，无法读取网盘授权")
+        token = await self.oauth_service.get_access_token(owner_user_id)
         share = await self.share_client.create_share(
             api_url=str(settings["api_url"]),
             api_method=str(settings["api_method"]),
@@ -241,7 +255,7 @@ class LibraryDeliveryService:
         )
         if share.get("success") or not share.get("auth_error"):
             return share
-        refreshed = await self.oauth_service.get_access_token(force_refresh=True)
+        refreshed = await self.oauth_service.get_access_token(owner_user_id, force_refresh=True)
         return await self.share_client.create_share(
             api_url=str(settings["api_url"]),
             api_method=str(settings["api_method"]),
@@ -277,7 +291,7 @@ class LibraryDeliveryService:
         fsid = str(item.get("fsid") or "")
         pan_path = str(item.get("pan_path") or "")
         try:
-            share = await self._create_share_with_refresh(settings, fsid, pan_path)
+            share = await self._create_share_with_refresh(bot_id, settings, fsid, pan_path)
         except BaiduOAuthError as exc:
             self.repository.add_log(
                 bot_id=bot_id, session_id=str(session["id"]), action="share_created",

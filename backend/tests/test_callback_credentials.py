@@ -10,7 +10,8 @@ def test_explicit_unknown_app_id_does_not_fall_back_to_other_bot(tmp_path, monke
             app_id="102825384",
             client_secret="secret-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             callback_url="https://bot.yzdoc.cn/api/events/callback/102825384",
-        )
+        ),
+        owner_user_id="user-test",
     )
     monkeypatch.setattr("app.routers.events.bot_repository", repository)
 

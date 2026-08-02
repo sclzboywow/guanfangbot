@@ -24,6 +24,7 @@ class BotPublic(BaseModel):
     updated_at: str
     callback_url: str = ""
     event_scopes: list[str] = Field(default_factory=list)
+    owner_user_id: str = ""
 
 
 class BotCreate(BaseModel):

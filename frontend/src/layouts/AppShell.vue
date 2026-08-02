@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import RobotMark from '@/components/RobotMark.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const mobileOpen = ref(false)
+const router = useRouter()
+const auth = useAuthStore()
 const coreLinks = [
   { to: '/bots', label: '我的机器人', icon: 'bot' },
   { to: '/chat', label: '好友聊天', icon: 'users' },
@@ -16,6 +19,11 @@ const featureLinks = [
   { to: '/group-moderation', label: '群消息治理', icon: 'shield' },
   { to: '/library-delivery', label: '共享文库', icon: 'library' },
 ]
+
+async function logout() {
+  await auth.logout()
+  await router.replace('/login')
+}
 </script>
 
 <template>
@@ -51,8 +59,9 @@ const featureLinks = [
       </nav>
 
       <div class="sidebar-summary">
-        <strong>开发控制台</strong>
-        <span>凭证、聊天、回调、事件、功能与接口调试</span>
+        <strong>{{ auth.user?.email || '未登录' }}</strong>
+        <span>{{ auth.user?.role === 'admin' ? '管理员工作区' : '独立租户工作区' }}</span>
+        <button class="btn ghost logout" type="button" @click="logout">退出登录</button>
       </div>
     </aside>
     <div v-if="mobileOpen" class="mask" @click="mobileOpen = false"></div>
@@ -76,8 +85,9 @@ const featureLinks = [
 .external { margin-left: auto; color: var(--ink-4); }
 .sidebar-summary { padding: 14px; border: 1px solid rgba(60,60,67,.08); border-radius: 18px; background: #fff; box-shadow: 0 10px 24px rgba(17,24,39,.05); }
 .sidebar-summary strong, .sidebar-summary span { display: block; }
-.sidebar-summary strong { color: var(--ink); font-size: 12.5px; }
+.sidebar-summary strong { color: var(--ink); font-size: 12.5px; word-break: break-all; }
 .sidebar-summary span { margin-top: 5px; color: var(--ink-4); font-size: 10.5px; line-height: 1.5; }
+.logout { margin-top: 10px; width: 100%; min-height: 34px; justify-content: center; }
 .main { min-width: 0; min-height: 100vh; }
 .mobile-menu { display: none; }
 .mask { display: none; }

@@ -162,7 +162,7 @@ def test_device_code_oauth_saves_tokens_without_exposing_them(tmp_path: Path) ->
     )
 
     async def run_flow() -> tuple[dict, dict]:
-        session = await service.start_authorization("bot-1")
+        session = await service.start_authorization("bot-1", "user-1")
         with sqlite3.connect(repository.path) as connection:
             connection.execute(
                 "UPDATE baidu_oauth_sessions SET next_poll_at = ? WHERE id = ?",
@@ -174,10 +174,10 @@ def test_device_code_oauth_saves_tokens_without_exposing_them(tmp_path: Path) ->
     session, polled = asyncio.run(run_flow())
     assert session["qr_image_url"].startswith("/api/library-delivery/oauth/qr/")
     assert polled["authorized"] is True
-    private = repository.get_tokens()
+    private = repository.get_tokens("user-1")
     assert private["access_token"] == "access-secret"
     assert private["refresh_token"] == "refresh-secret"
-    public = service.public_status()
+    public = service.public_status("user-1")
     assert public["authorized"] is True
     assert "access_token" not in public
     assert "refresh_token" not in public
@@ -187,6 +187,7 @@ def test_device_code_oauth_saves_tokens_without_exposing_them(tmp_path: Path) ->
 def test_oauth_refreshes_expired_access_token(tmp_path: Path) -> None:
     repository = BaiduOAuthRepository(tmp_path / "oauth.db")
     repository.save_tokens(
+        "user-1",
         access_token="old-access",
         refresh_token="refresh-secret",
         expires_in=60,
@@ -214,9 +215,9 @@ def test_oauth_refreshes_expired_access_token(tmp_path: Path) -> None:
         settings=oauth_settings(),
         transport=httpx.MockTransport(handler),
     )
-    token = asyncio.run(service.get_access_token())
+    token = asyncio.run(service.get_access_token("user-1"))
     assert token == "new-access"
-    assert repository.get_tokens()["refresh_token"] == "new-refresh"
+    assert repository.get_tokens("user-1")["refresh_token"] == "new-refresh"
 
 
 class FakeQQClient:
@@ -255,7 +256,7 @@ class FakeShareClient:
 
 
 class FakeOAuthService:
-    async def get_access_token(self, force_refresh: bool = False) -> str:
+    async def get_access_token(self, owner_user_id: str = "user-1", force_refresh: bool = False) -> str:
         return "backend-managed-token"
 
 
@@ -276,7 +277,13 @@ def test_search_then_plain_number_creates_one_share(tmp_path: Path) -> None:
     async def qq_provider(bot_id: str):
         return qq
 
-    service = LibraryDeliveryService(repository, share, qq_provider, FakeOAuthService())  # type: ignore[arg-type]
+    class FakeBots:
+        def get_owner_user_id(self, bot_id: str) -> str | None:
+            return "user-1"
+
+    service = LibraryDeliveryService(
+        repository, share, qq_provider, FakeOAuthService(), bots=FakeBots(),  # type: ignore[arg-type]
+    )
     search_payload = {
         "id": "event-search",
         "d": {
@@ -325,7 +332,13 @@ def test_group_message_at_bot_triggers_search(tmp_path: Path) -> None:
     async def qq_provider(bot_id: str):
         return qq
 
-    service = LibraryDeliveryService(repository, FakeShareClient(), qq_provider, FakeOAuthService())  # type: ignore[arg-type]
+    class FakeBots:
+        def get_owner_user_id(self, bot_id: str) -> str | None:
+            return "user-1"
+
+    service = LibraryDeliveryService(
+        repository, FakeShareClient(), qq_provider, FakeOAuthService(), bots=FakeBots(),  # type: ignore[arg-type]
+    )
     payload = {
         "d": {
             "id": "message-at-full",

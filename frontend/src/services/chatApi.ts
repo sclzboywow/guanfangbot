@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+import { request } from '@/services/http'
 
 export interface ChatContact {
   bot_id: string
@@ -50,32 +50,16 @@ interface ConversationResponse {
   messages: ChatMessage[]
 }
 
-function errorMessage(data: unknown, status: number): string {
-  if (data && typeof data === 'object' && 'detail' in data) {
-    const detail = (data as { detail: unknown }).detail
-    if (typeof detail === 'string') return detail
-  }
-  return `请求失败：${status}`
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(errorMessage(data, response.status))
-  return data as T
-}
-
 export const chatApi = {
   status: (botId: string) => request<ChatStatus>(`/chat/status?bot_id=${encodeURIComponent(botId)}`),
   messages: (botId: string, userOpenid: string) => request<ConversationResponse>(
     `/chat/messages?bot_id=${encodeURIComponent(botId)}&user_openid=${encodeURIComponent(userOpenid)}&limit=150`,
   ),
+  renameContact: (botId: string, userOpenid: string, displayName: string) =>
+    request<{ contact: ChatContact }>('/chat/contacts', {
+      method: 'PATCH',
+      body: JSON.stringify({ bot_id: botId, user_openid: userOpenid, display_name: displayName }),
+    }),
   send: (botId: string, userOpenid: string, content: string) => request<{ message: ChatMessage; delivery_mode: string }>(
     '/chat/messages',
     {

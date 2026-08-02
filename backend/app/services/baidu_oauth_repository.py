@@ -9,7 +9,7 @@ from typing import Any
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DATABASE_FILE = DATA_DIR / "baidu_oauth.db"
-ACCOUNT_ID = "shared-library"
+LEGACY_SHARED_ACCOUNT_ID = "shared-library"
 
 
 def utc_now_dt() -> datetime:
@@ -32,7 +32,7 @@ def parse_time(value: Any) -> datetime | None:
 
 
 class BaiduOAuthRepository:
-    """Stores one shared Baidu Netdisk authorization for all QQ library users."""
+    """Stores Baidu Netdisk authorization tokens per owner user."""
 
     def __init__(self, path: Path = DATABASE_FILE) -> None:
         self.path = path
@@ -80,12 +80,65 @@ class BaiduOAuthRepository:
                     ON baidu_oauth_sessions(status, created_at DESC);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(baidu_oauth_sessions)").fetchall()
+            }
+            if "owner_user_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE baidu_oauth_sessions ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_baidu_oauth_sessions_owner
+                    ON baidu_oauth_sessions(owner_user_id, status, created_at DESC)
+                """
+            )
+
+    def migrate_legacy_shared_token(self, owner_user_id: str) -> bool:
+        owner = owner_user_id.strip()
+        if not owner:
+            return False
+        with self._lock, self._connect() as connection:
+            legacy = connection.execute(
+                "SELECT * FROM baidu_oauth_tokens WHERE account_id = ?",
+                (LEGACY_SHARED_ACCOUNT_ID,),
+            ).fetchone()
+            if legacy is None:
+                return False
+            existing = connection.execute(
+                "SELECT account_id FROM baidu_oauth_tokens WHERE account_id = ?",
+                (owner,),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    "DELETE FROM baidu_oauth_tokens WHERE account_id = ?",
+                    (LEGACY_SHARED_ACCOUNT_ID,),
+                )
+                return True
+            connection.execute(
+                """
+                UPDATE baidu_oauth_tokens
+                SET account_id = ?
+                WHERE account_id = ?
+                """,
+                (owner, LEGACY_SHARED_ACCOUNT_ID),
+            )
+            connection.execute(
+                """
+                UPDATE baidu_oauth_sessions
+                SET owner_user_id = ?
+                WHERE owner_user_id = '' OR owner_user_id IS NULL
+                """,
+                (owner,),
+            )
+            return True
 
     @staticmethod
-    def _token_dict(row: sqlite3.Row | None) -> dict[str, Any]:
+    def _token_dict(account_id: str, row: sqlite3.Row | None) -> dict[str, Any]:
         if row is None:
             return {
-                "account_id": ACCOUNT_ID,
+                "account_id": account_id,
                 "access_token": "",
                 "refresh_token": "",
                 "expires_at": None,
@@ -95,25 +148,28 @@ class BaiduOAuthRepository:
             }
         return dict(row)
 
-    def get_tokens(self) -> dict[str, Any]:
+    def get_tokens(self, owner_user_id: str) -> dict[str, Any]:
+        account_id = owner_user_id.strip()
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM baidu_oauth_tokens WHERE account_id = ?",
-                (ACCOUNT_ID,),
+                (account_id,),
             ).fetchone()
-            return self._token_dict(row)
+            return self._token_dict(account_id, row)
 
     def save_tokens(
         self,
+        owner_user_id: str,
         *,
         access_token: str,
         refresh_token: str,
         expires_in: int,
         scope: str = "",
     ) -> dict[str, Any]:
+        account_id = owner_user_id.strip()
         now = utc_now_dt()
         expires_at = now + timedelta(seconds=max(60, int(expires_in or 0)))
-        current = self.get_tokens()
+        current = self.get_tokens(account_id)
         effective_refresh = str(refresh_token or current.get("refresh_token") or "").strip()
         authorized_at = str(current.get("authorized_at") or now.isoformat())
         with self._lock, self._connect() as connection:
@@ -132,7 +188,7 @@ class BaiduOAuthRepository:
                     updated_at = excluded.updated_at
                 """,
                 (
-                    ACCOUNT_ID,
+                    account_id,
                     str(access_token).strip(),
                     effective_refresh,
                     expires_at.isoformat(),
@@ -141,14 +197,19 @@ class BaiduOAuthRepository:
                     now.isoformat(),
                 ),
             )
-        return self.get_tokens()
+        return self.get_tokens(account_id)
 
-    def clear_tokens(self) -> None:
+    def clear_tokens(self, owner_user_id: str) -> None:
+        account_id = owner_user_id.strip()
         with self._lock, self._connect() as connection:
-            connection.execute("DELETE FROM baidu_oauth_tokens WHERE account_id = ?", (ACCOUNT_ID,))
+            connection.execute("DELETE FROM baidu_oauth_tokens WHERE account_id = ?", (account_id,))
             connection.execute(
-                "UPDATE baidu_oauth_sessions SET status = 'cancelled', updated_at = ? WHERE status = 'pending'",
-                (utc_now(),),
+                """
+                UPDATE baidu_oauth_sessions
+                SET status = 'cancelled', updated_at = ?
+                WHERE status = 'pending' AND owner_user_id = ?
+                """,
+                (utc_now(), account_id),
             )
 
     @staticmethod
@@ -163,6 +224,7 @@ class BaiduOAuthRepository:
         self,
         *,
         requested_by_bot_id: str,
+        owner_user_id: str,
         device_code: str,
         user_code: str,
         verification_url: str,
@@ -175,23 +237,29 @@ class BaiduOAuthRepository:
         session_id = uuid.uuid4().hex
         expires_at = now + timedelta(seconds=max(60, int(expires_in or 0)))
         next_poll_at = now + timedelta(seconds=interval)
+        owner = owner_user_id.strip()
         with self._lock, self._connect() as connection:
             connection.execute(
-                "UPDATE baidu_oauth_sessions SET status = 'superseded', updated_at = ? WHERE status = 'pending'",
-                (now.isoformat(),),
+                """
+                UPDATE baidu_oauth_sessions
+                SET status = 'superseded', updated_at = ?
+                WHERE status = 'pending' AND owner_user_id = ?
+                """,
+                (now.isoformat(), owner),
             )
             connection.execute(
                 """
                 INSERT INTO baidu_oauth_sessions (
-                    id, requested_by_bot_id, device_code, user_code,
+                    id, requested_by_bot_id, owner_user_id, device_code, user_code,
                     verification_url, qrcode_url, expires_at,
                     interval_seconds, next_poll_at, status, last_error,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
                 """,
                 (
                     session_id,
                     requested_by_bot_id,
+                    owner,
                     device_code,
                     user_code,
                     verification_url,
@@ -216,15 +284,15 @@ class BaiduOAuthRepository:
             ).fetchone()
             return self._session_dict(row)
 
-    def latest_pending_session(self) -> dict[str, Any] | None:
+    def latest_pending_session(self, owner_user_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM baidu_oauth_sessions
-                WHERE status = 'pending' AND expires_at > ?
+                WHERE status = 'pending' AND owner_user_id = ? AND expires_at > ?
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                (utc_now(),),
+                (owner_user_id.strip(), utc_now()),
             ).fetchone()
             return self._session_dict(row)
 

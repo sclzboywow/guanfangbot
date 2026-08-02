@@ -18,11 +18,20 @@ class Settings(BaseSettings):
     baidu_oauth_base: str = "https://openapi.baidu.com"
     baidu_oauth_timeout: float = 15.0
 
+    session_secret: str = "change-me-in-production"
+    bootstrap_admin_email: str = ""
+    bootstrap_admin_password: str = ""
+    auth_cookie_secure: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
 
 
 @lru_cache

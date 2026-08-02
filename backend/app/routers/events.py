@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.chat_service import chat_service
 from app.services.event_catalog import event_catalog_payload
@@ -22,18 +23,24 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/recent")
-def recent_events(bot_id: str | None = Query(default=None)) -> list[dict[str, Any]]:
+def recent_events(
+    bot_id: str | None = Query(default=None),
+    user: AuthUser = Depends(require_user),
+) -> list[dict[str, Any]]:
+    include_all = str(user.get("role") or "") == "admin"
+    owned = bot_repository.list_ids_for_owner(str(user["id"]), include_all=include_all)
     events = list(reversed(_recent_events))
     if bot_id:
+        require_owned_bot(bot_id, user)
         events = [event for event in events if event.get("bot_id") == bot_id]
+    else:
+        events = [event for event in events if event.get("bot_id") in owned]
     return events
 
 
 @router.get("/status")
-def event_status(bot_id: str = Query(...)) -> dict[str, Any]:
-    bot = bot_repository.get(bot_id)
-    if bot is None:
-        raise HTTPException(status_code=404, detail="机器人不存在")
+def event_status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    bot = require_owned_bot(bot_id, user)
 
     detection = bot_repository.get_event_detection(bot_id)
     verified_at, observed = detection if detection is not None else (None, {})

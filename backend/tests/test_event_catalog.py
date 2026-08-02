@@ -38,11 +38,14 @@ def test_event_scopes_reject_unknown_codes() -> None:
 def test_detection_state_is_persisted(tmp_path: Path) -> None:
     path = tmp_path / "bots.json"
     repository = BotRepository(path)
-    bot = repository.create(BotCreate(
-        app_id="123456789",
-        client_secret="test-secret",
-        callback_url="https://example.com/api/events/callback/123456789",
-    ))
+    bot = repository.create(
+        BotCreate(
+            app_id="123456789",
+            client_secret="test-secret",
+            callback_url="https://example.com/api/events/callback/123456789",
+        ),
+        owner_user_id="user-test",
+    )
 
     repository.mark_callback_verified(bot.id, "2026-08-02T00:00:00+00:00")
     repository.mark_event_observed(bot.id, "C2C_MESSAGE_CREATE", "2026-08-02T00:01:00+00:00")

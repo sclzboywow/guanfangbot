@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
+from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.chat_repository import chat_repository
 from app.services.chat_service import REQUIRED_EVENTS
@@ -38,11 +39,26 @@ class ChatSendRequest(BaseModel):
         return cleaned
 
 
-def _require_bot(bot_id: str):
-    bot = bot_repository.get(bot_id)
-    if bot is None:
-        raise HTTPException(status_code=404, detail="机器人不存在")
-    return bot
+class ChatContactRenameRequest(BaseModel):
+    bot_id: str = Field(min_length=1, max_length=128)
+    user_openid: str = Field(min_length=1, max_length=256)
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("bot_id", "user_openid")
+    @classmethod
+    def clean_identifier(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or any(char.isspace() for char in cleaned):
+            raise ValueError("标识不能为空或包含空格")
+        return cleaned
+
+    @field_validator("display_name")
+    @classmethod
+    def clean_display_name(cls, value: str) -> str:
+        cleaned = " ".join(value.replace("\r\n", "\n").replace("\r", "\n").split()).strip()
+        if not cleaned:
+            raise ValueError("昵称不能为空")
+        return cleaned[:80]
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -75,8 +91,8 @@ def _error_detail(result: dict[str, Any]) -> str:
 
 
 @router.get("/status")
-def chat_status(bot_id: str = Query(...)) -> dict[str, Any]:
-    bot = _require_bot(bot_id)
+def chat_status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
     return {
         "bot_id": bot.id,
@@ -90,8 +106,27 @@ def chat_status(bot_id: str = Query(...)) -> dict[str, Any]:
         ],
         "requirements_ready": all(code in configured for code in REQUIRED_EVENTS),
         "official_friend_list_supported": False,
-        "source_note": "QQ 官方接口没有提供全量好友列表。本页联系人来自机器人实际收到的单聊和好友关系事件。",
+        "source_note": (
+            "QQ 官方接口没有提供全量好友列表，也无法按 openid 查询用户昵称。"
+            "若单聊/好友事件里带有昵称会自动写入；也可在本页手动设置备注昵称。"
+        ),
     }
+
+
+@router.patch("/contacts")
+def rename_chat_contact(
+    payload: ChatContactRenameRequest,
+    user: AuthUser = Depends(require_user),
+) -> dict[str, Any]:
+    require_owned_bot(payload.bot_id, user)
+    contact = chat_repository.set_display_name(
+        payload.bot_id,
+        payload.user_openid,
+        payload.display_name,
+    )
+    if contact is None:
+        raise HTTPException(status_code=404, detail="联系人不存在")
+    return {"contact": contact}
 
 
 @router.get("/messages")
@@ -100,8 +135,9 @@ def chat_messages(
     user_openid: str = Query(...),
     limit: int = Query(default=100, ge=1, le=200),
     before_id: int | None = Query(default=None, ge=1),
+    user: AuthUser = Depends(require_user),
 ) -> dict[str, Any]:
-    _require_bot(bot_id)
+    require_owned_bot(bot_id, user)
     contact = chat_repository.get_contact(bot_id, user_openid)
     if contact is None:
         raise HTTPException(status_code=404, detail="联系人不存在")
@@ -118,8 +154,8 @@ def chat_messages(
 
 
 @router.post("/messages")
-async def send_chat_message(payload: ChatSendRequest) -> dict[str, Any]:
-    _require_bot(payload.bot_id)
+async def send_chat_message(payload: ChatSendRequest, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    require_owned_bot(payload.bot_id, user)
     contact = chat_repository.get_contact(payload.bot_id, payload.user_openid)
     if contact is None:
         raise HTTPException(status_code=404, detail="联系人不存在；请先让用户添加机器人好友或发起单聊")

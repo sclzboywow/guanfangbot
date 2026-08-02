@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+import { request } from '@/services/http'
 
 export interface Bot {
   id: string
@@ -13,6 +13,7 @@ export interface Bot {
   updated_at: string
   callback_url: string
   event_scopes: string[]
+  owner_user_id?: string
 }
 
 export interface BotCreatePayload {
@@ -211,33 +212,6 @@ export interface GroupModerationStatus {
     outbound_messages_single_line: boolean
     scope: string
   }
-}
-
-function errorMessage(data: unknown, status: number): string {
-  if (data && typeof data === 'object' && 'detail' in data) {
-    const detail = (data as { detail: unknown }).detail
-    if (typeof detail === 'string') return detail
-    if (Array.isArray(detail)) {
-      return detail.map((item) => (typeof item === 'object' && item && 'msg' in item ? String((item as { msg: unknown }).msg) : String(item))).join('; ')
-    }
-  }
-  if (data && typeof data === 'object' && 'message' in data) {
-    return String((data as { message: unknown }).message)
-  }
-  return `请求失败：${status}`
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(errorMessage(data, response.status))
-  return data as T
 }
 
 export const api = {
