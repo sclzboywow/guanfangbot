@@ -8,9 +8,10 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from app.services.ai_reply_service import ai_reply_service
 from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
-from app.services.chat_service import chat_service
+from app.services.chat_service import CHAT_EVENTS, chat_service
 from app.services.event_catalog import event_catalog_payload
 from app.services.group_moderation_service import group_moderation_service
 from app.services.group_verification_service import group_verification_service
@@ -93,7 +94,6 @@ def _resolve_credentials(app_id: str | None) -> tuple[str, str, str] | None:
 
 async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
     handlers = (
-        ("chat", chat_service.handle_event),
         ("group_verification", group_verification_service.handle_event),
         ("group_moderation", group_moderation_service.handle_event),
         ("library_delivery", library_delivery_service.handle_event),
@@ -103,6 +103,15 @@ async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str
             await handler(bot_id, event_type, payload)
         except Exception:
             logger.exception("%s event processing failed: %s", name, event_type)
+
+
+async def _persist_chat_and_ai(bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    """Persist C2C state before acknowledging QQ so AI jobs survive restarts."""
+    if event_type not in CHAT_EVENTS:
+        return
+    await chat_service.handle_event(bot_id, event_type, payload)
+    if event_type == "C2C_MESSAGE_CREATE":
+        await ai_reply_service.handle_event(bot_id, event_type, payload)
 
 
 async def _receive_event(
@@ -172,6 +181,10 @@ async def _receive_event(
         "received_at": received_at,
         "payload": payload,
     })
+    try:
+        await _persist_chat_and_ai(bot_id, event_type, payload)
+    except Exception:
+        logger.exception("chat/AI event persistence failed: %s", event_type)
     background_tasks.add_task(_process_feature_event, bot_id, event_type, payload)
     return JSONResponse({"op": 12})
 
