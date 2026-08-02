@@ -131,6 +131,35 @@ class QQBotClient:
         path = f"/v2/groups/{quote(group_openid, safe='')}/messages"
         return await self.request("POST", path, None, body)
 
+    async def send_c2c_text(
+        self,
+        user_openid: str,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        msg_seq: int = 1,
+        is_wakeup: bool = False,
+    ) -> dict[str, Any]:
+        """Send a plain-text QQ single-chat message to a known user OpenID."""
+        normalized = "\n".join(
+            line.rstrip()
+            for line in str(content).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        ).strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="单聊消息内容不能为空")
+        body: dict[str, Any] = {"content": normalized, "msg_type": 0}
+        if msg_id:
+            body["msg_id"] = msg_id
+            body["msg_seq"] = max(1, int(msg_seq))
+        elif event_id:
+            body["event_id"] = event_id
+            body["msg_seq"] = max(1, int(msg_seq))
+        elif is_wakeup:
+            body["is_wakeup"] = True
+        path = f"/v2/users/{quote(user_openid, safe='')}/messages"
+        return await self.request("POST", path, None, body)
+
     async def retract_group_message(self, group_openid: str, message_id: str) -> dict[str, Any]:
         path = (
             f"/v2/groups/{quote(group_openid, safe='')}/messages/"
