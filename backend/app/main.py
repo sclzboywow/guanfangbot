@@ -7,6 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import get_settings
 from app.routers import (
+    ai,
     auth,
     bots,
     chat,
@@ -16,6 +17,7 @@ from app.routers import (
     library_delivery,
     qqbot,
 )
+from app.services.ai_reply_service import ai_reply_service
 from app.services.auth_deps import get_optional_user
 from app.services.bootstrap import bootstrap_auth_and_ownership
 from app.services.log_retention import install_log_retention
@@ -55,12 +57,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
 async def lifespan(_: FastAPI):
     install_log_retention()
     bootstrap_auth_and_ownership()
-    yield
+    await ai_reply_service.start()
+    try:
+        yield
+    finally:
+        await ai_reply_service.stop()
 
 
 app = FastAPI(
     title="QQ Bot Admin Starter API",
-    version="0.6.0",
+    version="0.7.0",
     docs_url=None if settings.is_production else "/docs",
     redoc_url=None if settings.is_production else "/redoc",
     openapi_url=None if settings.is_production else "/openapi.json",
@@ -86,6 +92,7 @@ app.include_router(bots.router, prefix="/api")
 app.include_router(qqbot.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(ai.router, prefix="/api")
 app.include_router(group_verification.router, prefix="/api")
 app.include_router(group_moderation.router, prefix="/api")
 app.include_router(library_delivery.router, prefix="/api")
