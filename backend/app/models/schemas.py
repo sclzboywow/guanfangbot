@@ -169,7 +169,7 @@ class LibraryDeliverySettingsUpdate(BaseModel):
     share_period: Literal[0, 1, 7, 30] = 7
     session_ttl_seconds: int = Field(default=180, ge=30, le=1800)
     api_url: str = Field(default="https://pan.baidu.com/rest/2.0/xpan/share", min_length=1, max_length=2048)
-    api_method: str = Field(default="rapidshare", min_length=1, max_length=64)
+    api_method: str = Field(default="set", min_length=1, max_length=64)
 
     @field_validator(
         "database_path", "table_name", "title_column", "category_column",

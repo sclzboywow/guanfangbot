@@ -53,7 +53,8 @@ def _status_payload(bot_id: str) -> dict[str, Any]:
             "selection_requires_at": False,
             "max_results": 5,
             "session_one_use": True,
-            "outbound_messages_single_line": True,
+            "outbound_messages_single_line": False,
+            "search_and_share_messages_multiline": True,
             "baidu_account_scope": "single_backend_account",
         },
     }
@@ -73,7 +74,7 @@ def update_library_delivery_settings(
     if payload.enabled:
         selected = list(dict.fromkeys([*bot.event_scopes, *REQUIRED_EVENTS]))
         bot_repository.update(bot_id, BotUpdate(event_scopes=selected))
-    library_delivery_repository.update_settings(bot_id, **payload.model_dump())
+    library_delivery_repository.update_settings(bot_id, **payload.model_dump(exclude_unset=True))
     return _status_payload(bot_id)
 
 

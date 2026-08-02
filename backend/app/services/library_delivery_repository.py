@@ -13,7 +13,7 @@ DATABASE_FILE = DATA_DIR / "library_delivery.db"
 DEFAULT_LIBRARY_PATH = "/app/data/library.sqlite3"
 DEFAULT_TABLE_NAME = "新网盘资料"
 DEFAULT_API_URL = "https://pan.baidu.com/rest/2.0/xpan/share"
-DEFAULT_API_METHOD = "rapidshare"
+DEFAULT_API_METHOD = "set"
 
 
 def utc_now() -> str:

@@ -16,6 +16,10 @@ from app.services.library_delivery_repository import LibraryDeliveryRepository
 from app.services.library_delivery_service import LibraryDeliveryService, extract_search_query
 
 
+def _hash_name(index: int) -> str:
+    return f"{index:064x}.pdf"
+
+
 def create_catalog(path: Path, count: int = 7) -> None:
     connection = sqlite3.connect(path)
     connection.execute(
@@ -29,7 +33,7 @@ def create_catalog(path: Path, count: int = 7) -> None:
                 "地方标准",
                 1000 + index,
                 543379444407161 + index,
-                f"/云栈/不动产资料{index + 1}",
+                f"/云栈/aa/bb/{_hash_name(index + 1)}",
             ),
         )
     connection.commit()
@@ -118,8 +122,10 @@ def test_baidu_share_client_sends_strict_fsid_json() -> None:
         pwd="a1b2",
     ))
     assert result["success"] is True
-    assert captured["query"]["method"] == "rapidshare"
-    assert json.loads(captured["form"]["fsid_list"][0]) == ["543379444407161"]
+    # rapidshare 已映射为官方可用的 set，并使用整型 fid_list。
+    assert captured["query"]["method"] == "set"
+    assert json.loads(captured["form"]["fid_list"][0]) == [543379444407161]
+    assert captured["form"]["schannel"][0] == "4"
 
 
 def test_device_code_oauth_saves_tokens_without_exposing_them(tmp_path: Path) -> None:
@@ -226,6 +232,16 @@ class FakeShareClient:
     def __init__(self) -> None:
         self.calls = 0
 
+    async def resolve_fsid_by_path(self, *, access_token: str, pan_path: str) -> str | None:
+        text = str(pan_path or "").strip()
+        if not text:
+            return None
+        # Treat catalog paths as still present and return a stable live fsid.
+        return "900001"
+
+    async def fsid_exists(self, *, access_token: str, fsid: str) -> bool:
+        return str(fsid or "").isdigit()
+
     async def create_share(self, **kwargs):
         self.calls += 1
         return {
@@ -282,8 +298,74 @@ def test_search_then_plain_number_creates_one_share(tmp_path: Path) -> None:
         await service.handle_event("bot-test", "GROUP_MESSAGE_CREATE", selection_payload)
 
     asyncio.run(run_flow())
-    assert "找到6个结果" in qq.messages[0]
-    assert "\n" not in qq.messages[0]
+    assert "找到6个结果，前5个：" in qq.messages[0]
+    assert "1. " in qq.messages[0]
+    assert "\n" in qq.messages[0]
+    assert "请在3分钟内直接回复编号1-5。" in qq.messages[0]
     assert share.calls == 1
     assert "分享链接：https://pan.baidu.com/s/1example" in qq.messages[-1]
-    assert "\n" not in qq.messages[-1]
+    assert qq.messages[-1].startswith("标题：")
+    assert "\n提取码：" in qq.messages[-1]
+    assert "\n有效期：7天" in qq.messages[-1]
+
+
+def test_group_message_at_bot_triggers_search(tmp_path: Path) -> None:
+    catalog = tmp_path / "标准库.sqlite3"
+    create_catalog(catalog, count=3)
+    repository = LibraryDeliveryRepository(tmp_path / "state.db")
+    repository.update_settings(
+        "bot-test", enabled=True,
+        database_path=str(catalog), table_name="新网盘资料",
+        title_column="标题", category_column="分类", size_column="大小",
+        fsid_column="fsid", path_column="网盘地址", share_period=7,
+        session_ttl_seconds=180,
+    )
+    qq = FakeQQClient()
+
+    async def qq_provider(bot_id: str):
+        return qq
+
+    service = LibraryDeliveryService(repository, FakeShareClient(), qq_provider, FakeOAuthService())  # type: ignore[arg-type]
+    payload = {
+        "d": {
+            "id": "message-at-full",
+            "group_openid": "group-1",
+            "author": {"member_openid": "member-2", "username": "测试用户"},
+            "content": "<@D494B68901CF9834E3748294B8860453> 飞机",
+            "mentions": [
+                {
+                    "id": "D494B68901CF9834E3748294B8860453",
+                    "username": "共享文库",
+                    "bot": True,
+                    "is_you": True,
+                }
+            ],
+        }
+    }
+    asyncio.run(service.handle_event("bot-test", "GROUP_MESSAGE_CREATE", payload))
+    assert qq.messages, "should reply to @bot in GROUP_MESSAGE_CREATE"
+    assert "找到" in qq.messages[0]
+    assert "飞机" in qq.messages[0] or "结果" in qq.messages[0]
+
+
+def test_search_prefers_hash_paths_over_legacy_names(tmp_path: Path) -> None:
+    catalog = tmp_path / "标准库.sqlite3"
+    connection = sqlite3.connect(catalog)
+    connection.execute(
+        'CREATE TABLE "新网盘资料" ("标题" TEXT, "分类" TEXT, "大小" INTEGER, "fsid" INTEGER, "网盘地址" TEXT)'
+    )
+    connection.executemany(
+        'INSERT INTO "新网盘资料" VALUES (?, ?, ?, ?, ?)',
+        [
+            ("工业氦", "国标", 1, 111, "/云栈/75/46/093845_GB-T 28123-2025.pdf"),
+            ("工业氦", "国标", 2, 222, f"/云栈/ef/02/{_hash_name(99)}"),
+            ("工业氢", "国标", 3, 333, "/云栈/c5/47/221814_GB-T 3634-1995.pdf"),
+        ],
+    )
+    connection.commit()
+    connection.close()
+    total, results = search_catalog(settings_for(catalog), "工业", limit=5)
+    assert total == 3
+    assert results[0]["title"] == "工业氦"
+    assert results[0]["fsid"] == "222"
+    assert results[0]["pan_path"].endswith(f"/{_hash_name(99)}")

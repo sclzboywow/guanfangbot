@@ -69,6 +69,13 @@ def _like_value(term: str) -> str:
     return f"%{_escape_like(term)}%"
 
 
+def is_hash_pan_path(pan_path: str) -> bool:
+    """True when filename looks like a 64-char content hash PDF (current Netdisk naming)."""
+    name = str(pan_path or "").rsplit("/", 1)[-1].strip()
+    stem = name[:-4] if name.lower().endswith(".pdf") else name
+    return len(stem) == 64 and all(ch in "0123456789abcdef" for ch in stem.lower())
+
+
 def search_catalog(settings: dict[str, Any], keyword: str, limit: int = 5) -> tuple[int, list[dict[str, str]]]:
     query = " ".join(str(keyword or "").split()).strip()
     if not query:
@@ -98,6 +105,8 @@ def search_catalog(settings: dict[str, Any], keyword: str, limit: int = 5) -> tu
                 f"SELECT COUNT(*) FROM {table} WHERE {where}",
                 where_params,
             ).fetchone()[0])
+            # Pull a wider candidate window so callers can prefer currently shareable paths.
+            fetch_limit = max(1, min(80, int(limit)))
             rows = connection.execute(
                 f"""
                 SELECT
@@ -118,7 +127,7 @@ def search_catalog(settings: dict[str, Any], keyword: str, limit: int = 5) -> tu
                     CAST({title} AS TEXT) ASC
                 LIMIT ?
                 """,
-                [*where_params, query, _escape_like(query) + "%", max(1, min(20, int(limit)))],
+                [*where_params, query, _escape_like(query) + "%", fetch_limit],
             ).fetchall()
         except sqlite3.Error as exc:
             raise LibraryCatalogError(f"检索资料库失败：{exc}") from exc
@@ -136,4 +145,7 @@ def search_catalog(settings: dict[str, Any], keyword: str, limit: int = 5) -> tu
             "fsid": fsid_text,
             "pan_path": str(row["pan_path"] or "").strip(),
         })
-    return total, results
+    # Prefer current Netdisk hash filenames while keeping title relevance order.
+    preferred = [item for item in results if is_hash_pan_path(item["pan_path"])]
+    fallback = [item for item in results if not is_hash_pan_path(item["pan_path"])]
+    return total, (preferred + fallback)[: max(1, min(80, int(limit)))]

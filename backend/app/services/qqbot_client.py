@@ -111,9 +111,14 @@ class QQBotClient:
         msg_id: str | None = None,
         event_id: str | None = None,
         msg_seq: int = 1,
+        collapse_whitespace: bool = True,
     ) -> dict[str, Any]:
-        """Send a one-line plain-text group message."""
-        normalized = " ".join(str(content).split())
+        """Send a plain-text group message. By default collapses to one line."""
+        text = str(content).replace("\r\n", "\n").replace("\r", "\n")
+        if collapse_whitespace:
+            normalized = " ".join(text.split())
+        else:
+            normalized = "\n".join(line.rstrip() for line in text.split("\n")).strip()
         if not normalized:
             raise HTTPException(status_code=400, detail="群消息内容不能为空")
         body: dict[str, Any] = {"content": normalized, "msg_type": 0}
