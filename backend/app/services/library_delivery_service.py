@@ -36,7 +36,12 @@ def extract_search_query(content: str) -> str:
 
 
 def is_bot_mentioned(payload: dict[str, Any]) -> bool:
-    """True when the message @mentions this bot (full-group message mode uses GROUP_MESSAGE_CREATE)."""
+    """True when the message @mentions *this* bot (full-group message mode uses GROUP_MESSAGE_CREATE).
+
+    同一群里多个机器人都会收到 GROUP_MESSAGE_CREATE。不能凭 mentions[].bot=true 判断，
+    否则 @其他机器人 也会被本机器人当成自己被艾特（例如 @小云 触发共享文库查询）。
+    必须以 QQ 下发的 is_you=true 为准。
+    """
     data = payload.get("d") if isinstance(payload.get("d"), dict) else payload
     if not isinstance(data, dict):
         return False
@@ -44,10 +49,7 @@ def is_bot_mentioned(payload: dict[str, Any]) -> bool:
     if not isinstance(mentions, list):
         return False
     for item in mentions:
-        if not isinstance(item, dict):
-            continue
-        # QQ 全量群消息里，@本机器人通常带 is_you=true；兼容仅标记 bot=true 的情况。
-        if item.get("is_you") is True or item.get("bot") is True:
+        if isinstance(item, dict) and item.get("is_you") is True:
             return True
     return False
 

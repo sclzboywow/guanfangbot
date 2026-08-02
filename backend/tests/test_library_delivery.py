@@ -361,6 +361,60 @@ def test_group_message_at_bot_triggers_search(tmp_path: Path) -> None:
     assert "飞机" in qq.messages[0] or "结果" in qq.messages[0]
 
 
+def test_mentioning_another_bot_does_not_trigger_library_search(tmp_path: Path) -> None:
+    from app.services.library_delivery_service import is_bot_mentioned
+
+    # @小云：对共享文库来说 mentions 里只有其他机器人（bot=true, is_you=false）
+    other_bot_payload = {
+        "d": {
+            "id": "message-at-other",
+            "group_openid": "group-1",
+            "author": {"member_openid": "member-2"},
+            "content": "<@xiaoyun> 你好",
+            "mentions": [
+                {
+                    "id": "xiaoyun-id",
+                    "username": "小云",
+                    "bot": True,
+                    "is_you": False,
+                }
+            ],
+        }
+    }
+    assert is_bot_mentioned(other_bot_payload) is False
+
+    catalog = tmp_path / "标准库.sqlite3"
+    create_catalog(catalog, count=3)
+    repository = LibraryDeliveryRepository(tmp_path / "state.db")
+    repository.update_settings(
+        "bot-library",
+        enabled=True,
+        database_path=str(catalog),
+        table_name="新网盘资料",
+        title_column="标题",
+        category_column="分类",
+        size_column="大小",
+        fsid_column="fsid",
+        path_column="网盘地址",
+        share_period=7,
+        session_ttl_seconds=180,
+    )
+    qq = FakeQQClient()
+
+    async def qq_provider(bot_id: str):
+        return qq
+
+    class FakeBots:
+        def get_owner_user_id(self, bot_id: str) -> str | None:
+            return "user-1"
+
+    service = LibraryDeliveryService(
+        repository, FakeShareClient(), qq_provider, FakeOAuthService(), bots=FakeBots(),  # type: ignore[arg-type]
+    )
+    asyncio.run(service.handle_event("bot-library", "GROUP_MESSAGE_CREATE", other_bot_payload))
+    assert qq.messages == [], "must not search when another bot was @mentioned"
+
+
 def test_search_prefers_hash_paths_over_legacy_names(tmp_path: Path) -> None:
     catalog = tmp_path / "标准库.sqlite3"
     connection = sqlite3.connect(catalog)
