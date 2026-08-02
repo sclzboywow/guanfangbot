@@ -9,6 +9,7 @@ import httpx
 
 ALLOWED_PERIODS = {0, 1, 7, 30}
 PASSWORD_ALPHABET = string.ascii_lowercase + string.digits
+AUTH_ERROR_CODES = {110, 111}
 
 
 def generate_share_password() -> str:
@@ -23,6 +24,19 @@ def _share_link(value: Any) -> str:
         return text
     text = text.removeprefix("/s/").removeprefix("s/")
     return f"https://pan.baidu.com/s/{text}"
+
+
+def _is_auth_error(error_number: int, data: dict[str, Any]) -> bool:
+    if error_number in AUTH_ERROR_CODES:
+        return True
+    error_name = str(data.get("error") or "").strip().lower()
+    message = str(
+        data.get("errmsg")
+        or data.get("error_msg")
+        or data.get("message")
+        or ""
+    ).lower()
+    return error_name in {"invalid_token", "expired_token"} or "access token" in message
 
 
 class BaiduPanShareClient:
@@ -42,15 +56,15 @@ class BaiduPanShareClient:
     ) -> dict[str, Any]:
         token = str(access_token or "").strip()
         if not token:
-            return {"success": False, "status_code": None, "detail": "百度网盘 Access Token 未配置"}
+            return {"success": False, "status_code": None, "detail": "百度网盘尚未完成扫码授权", "auth_error": True}
         if int(period) not in ALLOWED_PERIODS:
-            return {"success": False, "status_code": None, "detail": "分享有效期只支持 0、1、7、30 天"}
+            return {"success": False, "status_code": None, "detail": "分享有效期只支持 0、1、7、30 天", "auth_error": False}
         clean_fsids = [str(item).strip() for item in fsids if str(item).strip()]
         if not clean_fsids:
-            return {"success": False, "status_code": None, "detail": "缺少可分享的 fsid"}
+            return {"success": False, "status_code": None, "detail": "缺少可分享的 fsid", "auth_error": False}
         password = (pwd or generate_share_password()).strip().lower()
         if len(password) != 4 or any(ch not in PASSWORD_ALPHABET for ch in password):
-            return {"success": False, "status_code": None, "detail": "分享码必须是 4 位小写字母或数字"}
+            return {"success": False, "status_code": None, "detail": "分享码必须是 4 位小写字母或数字", "auth_error": False}
 
         params = {"method": str(api_method or "rapidshare").strip(), "access_token": token}
         form = {
@@ -62,7 +76,12 @@ class BaiduPanShareClient:
             async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
                 response = await client.post(str(api_url).strip(), params=params, data=form)
         except httpx.HTTPError as exc:
-            return {"success": False, "status_code": None, "detail": f"百度网盘接口网络错误：{exc}"}
+            return {
+                "success": False,
+                "status_code": None,
+                "detail": f"百度网盘接口网络错误：{exc}",
+                "auth_error": False,
+            }
 
         try:
             data: Any = response.json()
@@ -90,6 +109,7 @@ class BaiduPanShareClient:
                 "pwd": str(data.get("pwd") or password),
                 "period": response_period,
                 "detail": "",
+                "auth_error": False,
             }
         message = data.get("errmsg") or data.get("error_msg") or data.get("message") or data.get("raw") or data
         return {
@@ -97,6 +117,7 @@ class BaiduPanShareClient:
             "status_code": response.status_code,
             "error_code": error_number,
             "detail": str(message)[:1500],
+            "auth_error": _is_auth_error(error_number, data),
         }
 
 
