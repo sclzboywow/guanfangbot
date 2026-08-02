@@ -280,6 +280,7 @@ class ChatRepository:
         user_openid: str,
         content: str,
         success: bool,
+        kind: str = "text",
         qq_message_id: str = "",
         reply_to_msg_id: str = "",
         msg_seq: int | None = None,
@@ -288,6 +289,7 @@ class ChatRepository:
         created_at: str | None = None,
     ) -> dict[str, Any]:
         now = created_at or utc_now()
+        safe_kind = kind if kind in {"text", "image", "file", "audio", "video"} else "text"
         preview = " ".join(str(content or "").split())[:160]
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
@@ -296,10 +298,10 @@ class ChatRepository:
                     bot_id, user_openid, direction, kind, qq_message_id,
                     reply_to_msg_id, msg_seq, content, success, status_code,
                     detail, created_at
-                ) VALUES (?, ?, 'outbound', 'text', ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    bot_id, user_openid, qq_message_id, reply_to_msg_id, msg_seq,
+                    bot_id, user_openid, safe_kind, qq_message_id, reply_to_msg_id, msg_seq,
                     str(content or ""), int(success), status_code, detail[:1200], now,
                 ),
             )
@@ -357,6 +359,29 @@ class ChatRepository:
                     (utc_now(), bot_id, user_openid),
                 )
         return [self._message_dict(row) for row in reversed(rows)]
+
+    def list_ai_context(self, bot_id: str, user_openid: str, *, turns: int = 12) -> list[dict[str, str]]:
+        """Return recent successful text messages in chronological model format."""
+        limit = max(2, min(60, int(turns) * 2))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT direction, content
+                FROM chat_messages
+                WHERE bot_id = ? AND user_openid = ?
+                  AND kind = 'text' AND success = 1
+                  AND direction IN ('inbound', 'outbound')
+                  AND TRIM(content) != ''
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (bot_id, user_openid, limit),
+            ).fetchall()
+        result: list[dict[str, str]] = []
+        for row in reversed(rows):
+            role = "user" if row["direction"] == "inbound" else "assistant"
+            result.append({"role": role, "content": str(row["content"])})
+        return result
 
     def latest_reply_context(self, bot_id: str, user_openid: str) -> dict[str, Any] | None:
         contact = self.get_contact(bot_id, user_openid)
