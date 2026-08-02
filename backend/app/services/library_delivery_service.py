@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Awaitable, Callable
 
+from app.services.baidu_oauth_service import BaiduOAuthError, BaiduOAuthService, baidu_oauth_service
 from app.services.baidu_pan_client import BaiduPanShareClient, baidu_pan_share_client
 from app.services.group_moderation_repository import group_moderation_repository
 from app.services.group_moderation_service import active_block, utc_now_dt
@@ -46,9 +47,11 @@ class LibraryDeliveryService:
         repository: LibraryDeliveryRepository = library_delivery_repository,
         share_client: BaiduPanShareClient = baidu_pan_share_client,
         qq_client_provider: Callable[[str], Awaitable[QQBotClient]] | None = None,
+        oauth_service: BaiduOAuthService = baidu_oauth_service,
     ) -> None:
         self.repository = repository
         self.share_client = share_client
+        self.oauth_service = oauth_service
         self._qq_client_provider = qq_client_provider or client_manager.get
 
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
@@ -140,6 +143,30 @@ class LibraryDeliveryService:
             detail=str(result.get("data", "")),
         )
 
+    async def _create_share_with_refresh(
+        self,
+        settings: dict[str, Any],
+        fsid: str,
+    ) -> dict[str, Any]:
+        token = await self.oauth_service.get_access_token()
+        share = await self.share_client.create_share(
+            api_url=str(settings["api_url"]),
+            api_method=str(settings["api_method"]),
+            access_token=token,
+            fsids=[fsid],
+            period=int(settings["share_period"]),
+        )
+        if share.get("success") or not share.get("auth_error"):
+            return share
+        refreshed = await self.oauth_service.get_access_token(force_refresh=True)
+        return await self.share_client.create_share(
+            api_url=str(settings["api_url"]),
+            api_method=str(settings["api_method"]),
+            access_token=refreshed,
+            fsids=[fsid],
+            period=int(settings["share_period"]),
+        )
+
     async def _handle_selection(
         self,
         bot_id: str,
@@ -163,30 +190,25 @@ class LibraryDeliveryService:
             await self._send(bot_id, group_openid, f"编号无效，请回复1-{len(results)}。", msg_id=message_id)
             return
         item = results[selection]
-        token = str(settings.get("access_token") or "").strip()
-        if not token:
+        fsid = str(item.get("fsid") or "")
+        try:
+            share = await self._create_share_with_refresh(settings, fsid)
+        except BaiduOAuthError as exc:
             self.repository.add_log(
                 bot_id=bot_id, session_id=str(session["id"]), action="share_created",
                 success=False, group_openid=group_openid, member_openid=member_openid,
                 query=str(session["query"]), title=str(item.get("title") or ""),
-                fsid=str(item.get("fsid") or ""), detail="百度网盘 Access Token 未配置",
+                fsid=fsid, detail=str(exc),
             )
-            await self._send(bot_id, group_openid, "创建分享失败，请联系管理员配置百度网盘授权。", msg_id=message_id)
+            await self._send(bot_id, group_openid, "创建分享失败，请联系管理员完成百度网盘扫码授权。", msg_id=message_id)
             return
-        share = await self.share_client.create_share(
-            api_url=str(settings["api_url"]),
-            api_method=str(settings["api_method"]),
-            access_token=token,
-            fsids=[str(item.get("fsid") or "")],
-            period=int(settings["share_period"]),
-        )
         if not share.get("success"):
             self.repository.add_log(
                 bot_id=bot_id, session_id=str(session["id"]), action="share_created",
                 success=False, status_code=share.get("status_code"),
                 group_openid=group_openid, member_openid=member_openid,
                 query=str(session["query"]), title=str(item.get("title") or ""),
-                fsid=str(item.get("fsid") or ""), detail=str(share.get("detail") or ""),
+                fsid=fsid, detail=str(share.get("detail") or ""),
             )
             await self._send(bot_id, group_openid, "创建分享失败，请稍后重试或联系管理员。", msg_id=message_id)
             return
@@ -205,7 +227,7 @@ class LibraryDeliveryService:
             success=send_success, status_code=send_code,
             group_openid=group_openid, member_openid=member_openid,
             query=str(session["query"]), title=str(item.get("title") or ""),
-            fsid=str(item.get("fsid") or ""), detail=str(send_result.get("data", "")),
+            fsid=fsid, detail=str(send_result.get("data", "")),
         )
 
 
