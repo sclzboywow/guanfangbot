@@ -4,6 +4,7 @@ import BotManageView from '@/views/BotManageView.vue'
 import EventConfigView from '@/views/EventConfigView.vue'
 import ApiConsoleView from '@/views/ApiConsoleView.vue'
 import ChatView from '@/views/ChatView.vue'
+import AiSettingsView from '@/views/AiSettingsView.vue'
 import GroupVerificationView from '@/views/GroupVerificationView.vue'
 import GroupModerationView from '@/views/GroupModerationView.vue'
 import LibraryDeliveryView from '@/views/LibraryDeliveryView.vue'
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/bots', name: 'bots', component: BotListView },
     { path: '/bots/:id', name: 'bot-manage', component: BotManageView, props: true },
     { path: '/chat', name: 'chat', component: ChatView },
+    { path: '/ai', name: 'ai', component: AiSettingsView },
     { path: '/events', name: 'events', component: EventConfigView },
     { path: '/group-verification', name: 'group-verification', component: GroupVerificationView },
     { path: '/group-moderation', name: 'group-moderation', component: GroupModerationView },
