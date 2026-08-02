@@ -166,8 +166,6 @@ class LibraryDeliverySettingsUpdate(BaseModel):
     size_column: str = Field(default="大小", min_length=1, max_length=128)
     fsid_column: str = Field(default="fsid", min_length=1, max_length=128)
     path_column: str = Field(default="网盘地址", min_length=1, max_length=128)
-    access_token: str | None = Field(default=None, max_length=8192)
-    clear_access_token: bool = False
     share_period: Literal[0, 1, 7, 30] = 7
     session_ttl_seconds: int = Field(default=180, ge=30, le=1800)
     api_url: str = Field(default="https://pan.baidu.com/rest/2.0/xpan/share", min_length=1, max_length=2048)
@@ -183,13 +181,6 @@ class LibraryDeliverySettingsUpdate(BaseModel):
         if not cleaned or "\x00" in cleaned:
             raise ValueError("配置内容不能为空或包含空字符")
         return cleaned
-
-    @field_validator("access_token")
-    @classmethod
-    def clean_access_token(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip() or None
 
     @field_validator("api_url")
     @classmethod
