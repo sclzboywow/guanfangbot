@@ -12,6 +12,7 @@ from app.services.bot_repository import bot_repository
 from app.services.event_catalog import event_catalog_payload
 from app.services.group_moderation_service import group_moderation_service
 from app.services.group_verification_service import group_verification_service
+from app.services.library_delivery_service import library_delivery_service
 from app.services.qq_signature import sign_validation, verify_request_signature
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -80,6 +81,7 @@ async def _process_feature_event(bot_id: str, event_type: str, payload: dict[str
     handlers = (
         ("group_verification", group_verification_service.handle_event),
         ("group_moderation", group_moderation_service.handle_event),
+        ("library_delivery", library_delivery_service.handle_event),
     )
     for name, handler in handlers:
         try:
