@@ -160,6 +160,49 @@ class QQBotClient:
         path = f"/v2/users/{quote(user_openid, safe='')}/messages"
         return await self.request("POST", path, None, body)
 
+    async def upload_c2c_media(
+        self,
+        user_openid: str,
+        url: str,
+        *,
+        file_type: int = 1,
+        srv_send_msg: bool = False,
+    ) -> dict[str, Any]:
+        """Ask QQ to fetch an HTTPS media URL and return file_info for C2C sending."""
+        media_url = str(url or "").strip()
+        if not media_url.startswith("https://"):
+            raise HTTPException(status_code=400, detail="单聊富媒体地址必须使用 HTTPS")
+        body = {
+            "file_type": max(1, min(4, int(file_type))),
+            "url": media_url,
+            "srv_send_msg": bool(srv_send_msg),
+        }
+        path = f"/v2/users/{quote(user_openid, safe='')}/files"
+        return await self.request("POST", path, None, body)
+
+    async def send_c2c_media(
+        self,
+        user_openid: str,
+        file_info: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        msg_seq: int = 1,
+    ) -> dict[str, Any]:
+        """Send previously uploaded C2C rich media using QQ file_info."""
+        normalized = str(file_info or "").strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="富媒体 file_info 不能为空")
+        body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": normalized}}
+        if msg_id:
+            body["msg_id"] = msg_id
+            body["msg_seq"] = max(1, int(msg_seq))
+        elif event_id:
+            body["event_id"] = event_id
+            body["msg_seq"] = max(1, int(msg_seq))
+        path = f"/v2/users/{quote(user_openid, safe='')}/messages"
+        return await self.request("POST", path, None, body)
+
     async def retract_group_message(self, group_openid: str, message_id: str) -> dict[str, Any]:
         path = (
             f"/v2/groups/{quote(group_openid, safe='')}/messages/"
