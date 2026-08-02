@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     baidu_oauth_base: str = "https://openapi.baidu.com"
     baidu_oauth_timeout: float = 15.0
 
+    # DeepSeek keys are supplied by each logged-in user and encrypted at rest.
+    deepseek_api_base: str = "https://api.deepseek.com"
+    deepseek_request_timeout: float = 45.0
+    ai_credentials_secret: str = ""
+
     session_secret: str = "change-me-in-production"
     bootstrap_admin_email: str = ""
     bootstrap_admin_password: str = ""
