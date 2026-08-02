@@ -10,12 +10,33 @@ export interface LibraryDeliverySettings {
   size_column: string
   fsid_column: string
   path_column: string
-  access_token_configured: boolean
   share_period: 0 | 1 | 7 | 30
   session_ttl_seconds: number
   api_url: string
   api_method: string
   updated_at?: string | null
+}
+
+export interface BaiduOAuthSession {
+  session_id: string
+  status: 'pending' | 'authorized' | 'expired' | 'denied' | 'failed' | 'cancelled' | 'superseded'
+  user_code: string
+  verification_url: string
+  qr_image_url: string
+  expires_at: string
+  interval_seconds: number
+  last_error: string
+  authorized?: boolean
+}
+
+export interface BaiduOAuthStatus {
+  app_configured: boolean
+  authorized: boolean
+  refreshable: boolean
+  token_expires_at?: string | null
+  authorized_at?: string | null
+  scope: string
+  pending_session?: BaiduOAuthSession | null
 }
 
 export interface LibraryDatabaseStatus {
@@ -54,6 +75,7 @@ export interface LibraryDeliveryStatus {
   app_id: string
   bot_name: string
   settings: LibraryDeliverySettings
+  oauth: BaiduOAuthStatus
   database: LibraryDatabaseStatus
   required_events: Array<{ code: string; configured: boolean }>
   requirements_ready: boolean
@@ -65,6 +87,7 @@ export interface LibraryDeliveryStatus {
     max_results: number
     session_one_use: boolean
     outbound_messages_single_line: boolean
+    baidu_account_scope: string
   }
 }
 
@@ -77,8 +100,6 @@ export interface LibraryDeliverySettingsPayload {
   size_column: string
   fsid_column: string
   path_column: string
-  access_token?: string
-  clear_access_token: boolean
   share_period: 0 | 1 | 7 | 30
   session_ttl_seconds: number
   api_url: string
@@ -102,7 +123,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
-  const data = await response.json().catch(() => ({}))
+  const contentType = response.headers.get('content-type') || ''
+  const data = contentType.includes('application/json')
+    ? await response.json().catch(() => ({}))
+    : await response.text().catch(() => '')
   if (!response.ok) throw new Error(errorMessage(data, response.status))
   return data as T
 }
@@ -116,5 +140,13 @@ export const libraryDeliveryApi = {
   testSearch: (botId: string, keyword: string) =>
     request<{ keyword: string; total_count: number; results: LibraryResult[] }>('/library-delivery/test-search', {
       method: 'POST', body: JSON.stringify({ bot_id: botId, keyword }),
+    }),
+  startOAuth: (botId: string) =>
+    request<{ oauth: BaiduOAuthStatus; session: BaiduOAuthSession }>(`/library-delivery/oauth/start?bot_id=${encodeURIComponent(botId)}`, {
+      method: 'POST',
+    }),
+  pollOAuth: (sessionId: string) =>
+    request<{ oauth: BaiduOAuthStatus; session: BaiduOAuthSession }>(`/library-delivery/oauth/poll/${encodeURIComponent(sessionId)}`, {
+      method: 'POST',
     }),
 }
