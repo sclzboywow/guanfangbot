@@ -5,6 +5,7 @@ import EventConfigView from '@/views/EventConfigView.vue'
 import ApiConsoleView from '@/views/ApiConsoleView.vue'
 import GroupVerificationView from '@/views/GroupVerificationView.vue'
 import GroupModerationView from '@/views/GroupModerationView.vue'
+import LibraryDeliveryView from '@/views/LibraryDeliveryView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/events', name: 'events', component: EventConfigView },
     { path: '/group-verification', name: 'group-verification', component: GroupVerificationView },
     { path: '/group-moderation', name: 'group-moderation', component: GroupModerationView },
+    { path: '/library-delivery', name: 'library-delivery', component: LibraryDeliveryView },
     { path: '/api-console', name: 'api-console', component: ApiConsoleView },
     { path: '/:pathMatch(.*)*', redirect: '/bots' },
   ],
