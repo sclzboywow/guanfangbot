@@ -65,7 +65,9 @@ export interface AiBotStatus {
   jobs: AiJob[]
   counts: Record<'pending' | 'running' | 'completed' | 'failed', number>
   required_event: string
+  required_events: string[]
   event_configured: boolean
+  group_event_configured: boolean
 }
 
 export const aiApi = {
