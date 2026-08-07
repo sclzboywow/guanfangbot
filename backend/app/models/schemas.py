@@ -115,6 +115,15 @@ class GroupVerificationSettingsUpdate(BaseModel):
     enabled: bool = False
     min_operand: int = Field(default=1, ge=0, le=100)
     max_operand: int = Field(default=20, ge=1, le=100)
+    success_message: str = Field(default="验证通过，你现在可以正常发言。", min_length=1, max_length=200)
+
+    @field_validator("success_message")
+    @classmethod
+    def normalize_success_message(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("验证成功提示不能为空")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_range(self) -> "GroupVerificationSettingsUpdate":

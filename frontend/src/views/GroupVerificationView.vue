@@ -15,6 +15,7 @@ const status = ref<GroupVerificationStatus | null>(null)
 const enabled = ref(false)
 const minOperand = ref(1)
 const maxOperand = ref(20)
+const successMessage = ref('验证通过，你现在可以正常发言。')
 const loading = ref(false)
 const saving = ref(false)
 const actionId = ref('')
@@ -75,6 +76,7 @@ async function loadStatus() {
     enabled.value = result.settings.enabled
     minOperand.value = result.settings.min_operand
     maxOperand.value = result.settings.max_operand
+    successMessage.value = result.settings.success_message
   } catch (e) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -92,7 +94,9 @@ async function saveSettings() {
       enabled: enabled.value,
       min_operand: Number(minOperand.value),
       max_operand: Number(maxOperand.value),
+      success_message: successMessage.value,
     })
+    successMessage.value = status.value.settings.success_message
     message.value = enabled.value
       ? '入群验证已启用；请确认 QQ 管理端已开通三个必需事件，并将机器人设为群管理员。'
       : '入群验证已关闭。现有记录保留，但不会继续拦截新消息。'
@@ -205,6 +209,18 @@ onMounted(async () => {
                 </div>
               </div>
 
+              <div class="field success-message-field">
+                <label>验证成功提示</label>
+                <input
+                  v-model="successMessage"
+                  class="input"
+                  type="text"
+                  maxlength="200"
+                  placeholder="验证通过，你现在可以正常发言。"
+                />
+                <small>成员答题正确或管理员手动通过后发送，最多 200 字。</small>
+              </div>
+
               <div class="behavior-grid">
                 <div><b>无需 @ 机器人</b><span>直接发送纯数字答案</span></div>
                 <div><b>永久等待</b><span>没有自动超时</span></div>
@@ -215,6 +231,10 @@ onMounted(async () => {
               <div class="preview">
                 <span>群内提示示例</span>
                 <code>欢迎加入本群，请先完成验证：8 + 7 = ? 请直接发送数字答案。</code>
+              </div>
+              <div class="preview">
+                <span>验证成功提示预览</span>
+                <code>{{ successMessage || '请输入验证成功提示' }}</code>
               </div>
             </section>
 
@@ -289,4 +309,5 @@ onMounted(async () => {
 
 <style scoped>
 .verification-page{max-width:1280px}.selector{max-width:480px;margin-bottom:18px}.empty,.loading-card{padding:30px}.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}.summary-card{padding:17px}.summary-card span,.summary-card strong,.summary-card small{display:block}.summary-card span{color:var(--ink-4);font-size:11.5px}.summary-card strong{margin-top:7px;font-size:19px}.summary-card small{margin-top:6px;color:var(--ink-4);font-size:11px;line-height:1.45}.good{color:#238541}.warn{color:var(--warn)}.muted{color:var(--ink-4)}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:start}.main-column,.side-column{display:flex;flex-direction:column;gap:18px}.side-column{position:sticky;top:22px}.panel{padding:22px}.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.switch-row{display:flex;align-items:center;gap:8px;padding:8px 11px;border:1px solid var(--line);border-radius:999px;font-size:12px;font-weight:700}.switch-row input{accent-color:var(--accent)}.number-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}.behavior-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}.behavior-grid div{padding:13px;border-radius:12px;background:var(--bg-sunken)}.behavior-grid b,.behavior-grid span{display:block}.behavior-grid b{font-size:12px}.behavior-grid span{margin-top:4px;color:var(--ink-4);font-size:10.5px}.preview{margin-top:16px;padding:13px;border:1px dashed var(--accent-border);border-radius:12px;background:var(--accent-soft)}.preview span,.preview code{display:block}.preview span{color:var(--ink-4);font-size:10.5px}.preview code{margin-top:7px;color:var(--ink-2);font:11px/1.55 var(--font-mono);white-space:normal}.sessions-head{align-items:center}.filters{display:flex;gap:5px;flex-wrap:wrap}.filters button,.mini{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink-3);font-size:10.5px}.filters button.active{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent)}.table-wrap{overflow:auto;margin-top:16px}table{width:100%;border-collapse:collapse;font-size:11.5px}th,td{padding:12px 10px;border-top:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--ink-4);font-size:10px;font-weight:650;white-space:nowrap}td strong,td small,td span{display:block}td small{margin-top:4px;color:var(--ink-4);font-size:9.5px;line-height:1.4}.state{display:inline-block!important;padding:4px 7px;border-radius:999px;font-size:9.5px;font-weight:700}.state.pending{background:rgba(255,149,0,.12);color:var(--warn)}.state.verified{background:rgba(52,199,89,.12);color:#238541}.state.removed{background:rgba(60,60,67,.08);color:var(--ink-4)}.row-error{max-width:180px;color:var(--danger)!important}.row-actions{display:flex;gap:5px;flex-wrap:wrap;min-width:130px}.good-btn{color:#238541}.danger-btn{color:var(--danger)}.empty-list{padding:28px 8px;text-align:center;color:var(--ink-4);font-size:12px}.empty-list.compact{padding:16px 0}.requirement-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 0;border-bottom:1px solid var(--line)}.requirement-row code{font-size:9.5px}.ready{color:#238541}.missing{color:var(--danger)}.requirement-panel>p{margin:14px 0;color:var(--ink-4);font-size:11px;line-height:1.55}.full{width:100%;justify-content:center}.admin-warning{margin-top:14px;padding:12px;border-radius:11px;background:rgba(255,149,0,.09)}.admin-warning strong,.admin-warning span{display:block}.admin-warning strong{color:#8a5a00;font-size:11px}.admin-warning span{margin-top:5px;color:#815500;font-size:10.5px;line-height:1.5}.log-row{padding:11px 0;border-top:1px solid var(--line)}.log-row>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.log-row strong{font-size:11px}.log-row span{font-size:9.5px}.log-row small{display:block;margin-top:4px;color:var(--ink-4);font-size:9.5px}.notice{margin-top:14px}.ok{color:#238541}.error{color:var(--danger)}@media(max-width:1050px){.layout{grid-template-columns:1fr}.side-column{position:static;display:grid;grid-template-columns:1fr 1fr}.summary-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:700px){.summary-grid,.side-column,.number-grid,.behavior-grid{grid-template-columns:1fr}.section-head,.sessions-head{align-items:flex-start;flex-direction:column}.table-wrap{margin-left:-10px;margin-right:-10px}.page-head{padding-right:50px}}
+.success-message-field{margin-top:16px}.success-message-field small{display:block;margin-top:6px;color:var(--ink-4);font-size:10.5px}
 </style>

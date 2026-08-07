@@ -58,6 +58,7 @@ def update_verification_settings(
         enabled=payload.enabled,
         min_operand=payload.min_operand,
         max_operand=payload.max_operand,
+        success_message=payload.success_message,
     )
     return _status_payload(bot_id, user)
 

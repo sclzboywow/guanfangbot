@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,13 @@ def test_single_line_collapses_all_whitespace() -> None:
 
 def test_join_wrong_message_then_correct_answer(tmp_path: Path) -> None:
     repository, client, service = make_service(tmp_path)
+    repository.update_settings(
+        "bot-1",
+        enabled=True,
+        min_operand=1,
+        max_operand=9,
+        success_message="欢迎通过验证，现在可以聊天啦。",
+    )
 
     asyncio.run(
         service.handle_event(
@@ -118,6 +126,7 @@ def test_join_wrong_message_then_correct_answer(tmp_path: Path) -> None:
     assert verified["status"] == "verified"
     assert client.retracted == [("group-1", "msg-wrong")]
     assert client.sent[-1]["msg_id"] == "msg-correct"
+    assert client.sent[-1]["content"] == "欢迎通过验证，现在可以聊天啦。"
     assert "\n" not in client.sent[-1]["content"]
 
 
@@ -191,3 +200,27 @@ def test_repository_state_persists(tmp_path: Path) -> None:
     reopened = GroupVerificationRepository(path)
     assert reopened.get_settings("bot-1")["enabled"] is True
     assert reopened.get_pending_session("bot-1", "g", "u")["answer"] == 5
+
+
+def test_existing_database_adds_success_message_column(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-verification.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE verification_settings (
+                bot_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                min_operand INTEGER NOT NULL DEFAULT 1,
+                max_operand INTEGER NOT NULL DEFAULT 20,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO verification_settings(bot_id, enabled, min_operand, max_operand, updated_at) "
+            "VALUES ('bot-1', 1, 2, 8, '2026-08-07T00:00:00+00:00')"
+        )
+
+    repository = GroupVerificationRepository(path)
+    settings = repository.get_settings("bot-1")
+    assert settings["success_message"] == "验证通过，你现在可以正常发言。"

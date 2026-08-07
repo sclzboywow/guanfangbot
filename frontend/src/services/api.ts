@@ -87,6 +87,7 @@ export interface GroupVerificationSettings {
   enabled: boolean
   min_operand: number
   max_operand: number
+  success_message: string
   updated_at?: string | null
 }
 
@@ -227,7 +228,7 @@ export const api = {
   recentEvents: (botId?: string) => request<BotEvent[]>(botId ? `/events/recent?bot_id=${encodeURIComponent(botId)}` : '/events/recent'),
   eventStatus: (botId: string) => request<EventStatusResponse>(`/events/status?bot_id=${encodeURIComponent(botId)}`),
   groupVerificationStatus: (botId: string) => request<GroupVerificationStatus>(`/group-verification/status?bot_id=${encodeURIComponent(botId)}`),
-  updateGroupVerificationSettings: (botId: string, payload: { enabled: boolean; min_operand: number; max_operand: number }) =>
+  updateGroupVerificationSettings: (botId: string, payload: { enabled: boolean; min_operand: number; max_operand: number; success_message: string }) =>
     request<GroupVerificationStatus>(`/group-verification/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   verifyGroupMember: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST' }),
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),

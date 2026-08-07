@@ -168,8 +168,8 @@ class GroupVerificationService:
         return single_line(f"欢迎加入本群，请先完成验证：{question} 请直接发送数字答案。")
 
     @staticmethod
-    def success_message() -> str:
-        return single_line("验证通过，你现在可以正常发言。")
+    def success_message(value: str) -> str:
+        return single_line(value)
 
     async def _send_question(
         self,
@@ -204,7 +204,7 @@ class GroupVerificationService:
             if event_type == "GROUP_MEMBER_ADD":
                 await self._handle_member_add(bot_id, payload, settings)
             elif event_type == "GROUP_MESSAGE_CREATE":
-                await self._handle_group_message(bot_id, payload)
+                await self._handle_group_message(bot_id, payload, settings)
             elif event_type == "GROUP_MEMBER_REMOVE":
                 self._handle_member_remove(bot_id, payload)
         except Exception as exc:
@@ -249,7 +249,12 @@ class GroupVerificationService:
             reply_event_id=event_id(payload),
         )
 
-    async def _handle_group_message(self, bot_id: str, payload: dict[str, Any]) -> None:
+    async def _handle_group_message(
+        self,
+        bot_id: str,
+        payload: dict[str, Any],
+        settings: dict[str, Any],
+    ) -> None:
         if is_bot_author(payload):
             return
         group_openid = extract_group_openid(payload)
@@ -279,7 +284,7 @@ class GroupVerificationService:
             client = await self._client_provider(bot_id)
             result = await client.send_group_text(
                 group_openid,
-                self.success_message(),
+                self.success_message(str(settings["success_message"])),
                 msg_id=message_id or None,
             )
             self.repository.add_log(
@@ -347,7 +352,11 @@ class GroupVerificationService:
         self.repository.mark_verified(session_id)
         updated = self.repository.get_session(session_id)
         client = await self._client_provider(str(session["bot_id"]))
-        result = await client.send_group_text(str(session["group_openid"]), self.success_message())
+        settings = self.repository.get_settings(str(session["bot_id"]))
+        result = await client.send_group_text(
+            str(session["group_openid"]),
+            self.success_message(str(settings["success_message"])),
+        )
         self.repository.add_log(
             bot_id=str(session["bot_id"]),
             session_id=session_id,

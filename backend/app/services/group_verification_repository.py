@@ -9,6 +9,7 @@ from typing import Any
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DATABASE_FILE = DATA_DIR / "group_verification.db"
+DEFAULT_SUCCESS_MESSAGE = "验证通过，你现在可以正常发言。"
 
 
 def utc_now() -> str:
@@ -40,6 +41,7 @@ class GroupVerificationRepository:
                     enabled INTEGER NOT NULL DEFAULT 0,
                     min_operand INTEGER NOT NULL DEFAULT 1,
                     max_operand INTEGER NOT NULL DEFAULT 20,
+                    success_message TEXT NOT NULL DEFAULT '验证通过，你现在可以正常发言。',
                     updated_at TEXT NOT NULL
                 );
 
@@ -91,6 +93,15 @@ class GroupVerificationRepository:
                     ON verification_logs(bot_id, created_at DESC);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(verification_settings)").fetchall()
+            }
+            if "success_message" not in columns:
+                connection.execute(
+                    "ALTER TABLE verification_settings "
+                    "ADD COLUMN success_message TEXT NOT NULL DEFAULT '验证通过，你现在可以正常发言。'"
+                )
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -107,26 +118,38 @@ class GroupVerificationRepository:
                 "enabled": False,
                 "min_operand": 1,
                 "max_operand": 20,
+                "success_message": DEFAULT_SUCCESS_MESSAGE,
                 "updated_at": None,
             }
         result = dict(row)
         result["enabled"] = bool(result["enabled"])
         return result
 
-    def update_settings(self, bot_id: str, *, enabled: bool, min_operand: int, max_operand: int) -> dict[str, Any]:
+    def update_settings(
+        self,
+        bot_id: str,
+        *,
+        enabled: bool,
+        min_operand: int,
+        max_operand: int,
+        success_message: str = DEFAULT_SUCCESS_MESSAGE,
+    ) -> dict[str, Any]:
         updated_at = utc_now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO verification_settings(bot_id, enabled, min_operand, max_operand, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO verification_settings(
+                    bot_id, enabled, min_operand, max_operand, success_message, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     enabled = excluded.enabled,
                     min_operand = excluded.min_operand,
                     max_operand = excluded.max_operand,
+                    success_message = excluded.success_message,
                     updated_at = excluded.updated_at
                 """,
-                (bot_id, int(enabled), min_operand, max_operand, updated_at),
+                (bot_id, int(enabled), min_operand, max_operand, success_message, updated_at),
             )
         return self.get_settings(bot_id)
 
