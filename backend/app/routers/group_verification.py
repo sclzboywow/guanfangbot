@@ -16,12 +16,11 @@ router = APIRouter(prefix="/group-verification", tags=["group-verification"])
 def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
     bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
-    settings = group_verification_repository.get_settings(bot_id)
     return {
         "bot_id": bot.id,
         "app_id": bot.app_id,
         "bot_name": bot.name,
-        "settings": settings,
+        "settings": group_verification_repository.get_settings(bot_id),
         "required_events": [
             {"code": code, "configured": code in configured}
             for code in REQUIRED_EVENTS
@@ -34,17 +33,14 @@ def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
             "answer_requires_at": False,
             "pending_messages_retracted": True,
             "verification_expires": True,
-            "official_mute_on_failure": settings.get("failure_action") == "mute",
-            "verification_mode": settings.get("verification_mode", "math"),
+            "failure_uses_official_mute": True,
             "outbound_messages_single_line": True,
         },
     }
 
 
 @router.get("/status")
-async def verification_status(bot_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
-    require_owned_bot(bot_id, user)
-    await group_verification_service.process_expired_sessions()
+def verification_status(bot_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     return _status_payload(bot_id, user)
 
 
@@ -58,7 +54,10 @@ def update_verification_settings(
     if payload.enabled:
         selected = list(dict.fromkeys([*bot.event_scopes, *REQUIRED_EVENTS]))
         bot_repository.update(bot_id, BotUpdate(event_scopes=selected))
-    group_verification_repository.update_settings(bot_id, **payload.model_dump())
+    group_verification_repository.update_settings(
+        bot_id,
+        **payload.model_dump(),
+    )
     return _status_payload(bot_id, user)
 
 
@@ -70,10 +69,8 @@ async def manual_verify(session_id: str, user: AuthUser = Depends(require_user))
     require_owned_bot(str(session["bot_id"]), user)
     try:
         await group_verification_service.verify_session(session_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)
 
 
@@ -85,10 +82,8 @@ async def reset_verification(session_id: str, user: AuthUser = Depends(require_u
     require_owned_bot(str(session["bot_id"]), user)
     try:
         await group_verification_service.reset_session(session_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)
 
 
@@ -100,6 +95,6 @@ async def close_verification(session_id: str, user: AuthUser = Depends(require_u
     require_owned_bot(str(session["bot_id"]), user)
     try:
         await group_verification_service.close_session(session_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)

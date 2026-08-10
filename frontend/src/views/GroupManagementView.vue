@@ -10,7 +10,7 @@ import {
   type OfficialJoinRequest,
 } from '@/services/api'
 
-type Tab = 'requests' | 'strategies' | 'mutes' | 'legacy'
+type Tab = 'requests' | 'strategies' | 'verification' | 'mutes'
 
 const route = useRoute()
 const bots = ref<Bot[]>([])
@@ -29,8 +29,7 @@ const requestFilter = ref<'pending' | 'all'>('pending')
 const rejectReasons = ref<Record<string, string>>({})
 const rejectBlacklists = ref<Record<string, boolean>>({})
 
-const createMode = ref<'group_openids' | 'group_ids'>('group_openids')
-const createGroups = ref('')
+const createGroups = ref<string[]>([])
 const createEnabled = ref(true)
 const createExpire = ref('')
 const createRemark = ref('')
@@ -38,7 +37,7 @@ const createRemark = ref('')
 const editingStrategy = ref('')
 const strategyGroupOp = ref<'add' | 'del'>('add')
 const strategyGroupMode = ref<'group_openids' | 'group_ids'>('group_openids')
-const strategyGroupValues = ref('')
+const strategyGroupValues = ref<string[]>([])
 const strategyRemark = ref('')
 const strategyExpire = ref('')
 
@@ -47,11 +46,12 @@ const whitelistOp = ref<'add' | 'del'>('add')
 const whitelistUsers = ref('')
 
 const muteGroup = ref('')
-const muteMember = ref('')
-const muteMode = ref<'single' | 'batch'>('single')
+const muteMember = ref<string[]>([])
 const muteOp = ref<'add' | 'update'>('add')
 const muteDuration = ref('60')
 const muteCustomEnd = ref('')
+const manualApprovalEnabled = ref(true)
+const autoApprovalEnabled = ref(true)
 
 const pendingCount = computed(() => status.value?.join_requests.filter(item => item.status === 'pending').length || 0)
 const eventStateClass = computed(() => status.value?.requirements_ready ? 'ready' : 'warn')
@@ -60,6 +60,7 @@ const displayedRequests = computed(() => {
   const items = status.value?.join_requests || []
   return requestFilter.value === 'pending' ? items.filter(item => item.status === 'pending') : items
 })
+const knownMuteMembers = computed(() => (status.value?.known_members || []).filter(item => item.group_openid === muteGroup.value))
 
 function splitValues(value: string): string[] {
   return [...new Set(value.split(/[\s,，;；]+/).map(item => item.trim()).filter(Boolean))]
@@ -121,6 +122,8 @@ async function loadStatus() {
   clearNotice()
   try {
     status.value = await api.groupManagementStatus(botId.value)
+    manualApprovalEnabled.value = status.value.settings.manual_approval_enabled
+    autoApprovalEnabled.value = status.value.settings.auto_approval_enabled
     if (!selectedGroup.value && status.value.groups.length) selectedGroup.value = status.value.groups[0].group_openid
     if (!muteGroup.value && status.value.groups.length) muteGroup.value = status.value.groups[0].group_openid
   } catch (e) {
@@ -163,7 +166,7 @@ async function enableEvent() {
 
 async function syncRequests() {
   if (!selectedGroup.value.trim()) {
-    error.value = '请选择已识别的群，或粘贴群 OpenID。'
+    error.value = '请从已识别群中选择一个群。'
     return
   }
   busy.value = 'sync'
@@ -203,22 +206,22 @@ async function decide(item: OfficialJoinRequest, op: 'approve' | 'decline') {
 }
 
 async function createStrategy() {
-  const groups = splitValues(createGroups.value)
+  const groups = createGroups.value
   if (!groups.length) {
-    error.value = createMode.value === 'group_ids' ? '请填写至少一个QQ群号。' : '请填写至少一个群 OpenID。'
+    error.value = '请从已识别群中至少选择一个群。'
     return
   }
   busy.value = 'create-strategy'
   clearNotice()
   try {
     await api.createApprovalStrategy(botId.value, {
-      group_mode: createMode.value,
+      group_mode: 'group_openids',
       groups,
       is_enable: createEnabled.value ? 'on' : 'off',
       expire_at: localToRfc3339(createExpire.value),
       remark: createRemark.value.trim(),
     })
-    createGroups.value = ''
+    createGroups.value = []
     createRemark.value = ''
     createExpire.value = ''
     await loadStrategies()
@@ -280,7 +283,7 @@ async function removeStrategy(item: ApprovalStrategy) {
 function openGroupEditor(item: ApprovalStrategy) {
   editingStrategy.value = editingStrategy.value === item.strategy_id ? '' : item.strategy_id
   strategyGroupMode.value = item.group_ids?.length ? 'group_ids' : 'group_openids'
-  strategyGroupValues.value = ''
+  strategyGroupValues.value = []
   strategyRemark.value = item.remark || ''
   strategyExpire.value = toLocalDateTime(item.expire_at)
 }
@@ -304,7 +307,7 @@ async function updateStrategyDetails(item: ApprovalStrategy) {
 }
 
 async function updateStrategyGroups(item: ApprovalStrategy) {
-  const groups = splitValues(strategyGroupValues.value)
+  const groups = strategyGroupValues.value
   if (!groups.length) {
     error.value = '请填写需要新增或移除的群。'
     return
@@ -354,7 +357,7 @@ async function updateWhitelist() {
 
 async function loadMutes() {
   if (!muteGroup.value.trim()) {
-    error.value = '请选择或填写群 OpenID。'
+    error.value = '请从已识别群中选择一个群。'
     return
   }
   busy.value = 'load-mutes'
@@ -370,13 +373,9 @@ async function loadMutes() {
 
 async function applyMute() {
   const expireAt = expireAtFromMuteForm()
-  const members = splitValues(muteMember.value)
+  const members = muteMember.value
   if (!muteGroup.value.trim() || !members.length) {
-    error.value = '请填写群 OpenID 和成员 OpenID。'
-    return
-  }
-  if (muteMode.value === 'single' && members.length !== 1) {
-    error.value = '单个操作只能填写一名成员；如需一次处理多人，请选择“批量”。'
+    error.value = '请选择群和已识别成员。'
     return
   }
   if (members.length > 10) {
@@ -394,7 +393,7 @@ async function applyMute() {
       group_openid: muteGroup.value.trim(),
       members: members.map(member_openid => ({ op: muteOp.value, member_openid, mute_expire_at: expireAt })),
     })
-    muteMember.value = ''
+    muteMember.value = []
     message.value = muteOp.value === 'add'
       ? `已通过QQ官方接口禁言 ${members.length} 名成员。`
       : `已更新 ${members.length} 名成员的禁言结束时间。`
@@ -406,11 +405,26 @@ async function applyMute() {
 }
 
 function prepareMuteUpdate(memberOpenid: string) {
-  muteMember.value = memberOpenid
-  muteMode.value = 'single'
+  muteMember.value = [memberOpenid]
   muteOp.value = 'update'
   muteDuration.value = '60'
   window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveFeatureSwitches() {
+  busy.value = 'feature-switches'
+  clearNotice()
+  try {
+    status.value = await api.updateGroupManagementSettings(botId.value, {
+      manual_approval_enabled: manualApprovalEnabled.value,
+      auto_approval_enabled: autoApprovalEnabled.value,
+    })
+    message.value = '审批方式开关已保存。'
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '保存审批开关失败'
+  } finally {
+    busy.value = ''
+  }
 }
 
 async function unmute(memberOpenid: string) {
@@ -451,7 +465,7 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1 class="page-title">官方群管理</h1>
-        <p class="page-sub">不需要编写接口或JSON，选择操作方式并填写群号、OpenID或QQ号即可。</p>
+        <p class="page-sub">群与成员标识由事件自动维护；这里只需选择群、设置审批方式和验证规则。</p>
       </div>
       <button class="btn" :disabled="loading || !botId" @click="reloadAll">刷新全部</button>
     </div>
@@ -469,18 +483,23 @@ onMounted(async () => {
       <nav class="tabs">
         <button :class="{ active: tab === 'requests' }" @click="tab = 'requests'">待审批 <span>{{ pendingCount }}</span></button>
         <button :class="{ active: tab === 'strategies' }" @click="tab = 'strategies'">自动审批策略</button>
+        <button :class="{ active: tab === 'verification' }" @click="tab = 'verification'">入群后验证</button>
         <button :class="{ active: tab === 'mutes' }" @click="tab = 'mutes'">成员禁言</button>
-        <button :class="{ active: tab === 'legacy' }" @click="tab = 'legacy'">兼容验证</button>
       </nav>
 
       <div v-if="loading" class="card loading">正在加载群管理数据…</div>
 
       <template v-else-if="status && tab === 'requests'">
+        <section class="card panel feature-switches">
+          <div><h2 class="section-title">入群前审批开关</h2><p class="section-sub">人工审批与白名单自动审批相互独立，可以单独开启或同时开启。</p></div>
+          <label class="switch-card"><input v-model="manualApprovalEnabled" type="checkbox"><span><b>人工审批</b><small>保留通过、拒绝、拒绝并拉黑</small></span></label>
+          <label class="switch-card"><input v-model="autoApprovalEnabled" type="checkbox"><span><b>白名单自动审批</b><small>使用QQ官方策略和真实QQ号白名单</small></span></label>
+          <button class="btn primary" :disabled="busy === 'feature-switches'" @click="saveFeatureSwitches">保存开关</button>
+        </section>
         <section class="card panel sync-panel">
           <div><h2 class="section-title">同步指定群的申请</h2><p class="section-sub">新申请会通过事件自动进入列表；手动同步用于补回服务离线期间遗漏的申请。</p></div>
           <div class="inline-form">
-            <input v-model="selectedGroup" class="input mono" list="known-groups" placeholder="选择已识别群，或粘贴群 OpenID">
-            <datalist id="known-groups"><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || shortId(group.group_openid) }}</option></datalist>
+            <select v-model="selectedGroup" class="select"><option disabled value="">等待机器人从事件识别群</option><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || `群 ${shortId(group.group_openid)}` }}</option></select>
             <button class="btn primary" :disabled="busy === 'sync'" @click="syncRequests">{{ busy === 'sync' ? '同步中…' : '同步申请' }}</button>
           </div>
           <div v-if="status.groups.length" class="group-chips"><button v-for="group in status.groups" :key="group.group_openid" @click="chooseKnownGroup(group.group_openid)">{{ group.group_name || shortId(group.group_openid) }}</button></div>
@@ -499,7 +518,7 @@ onMounted(async () => {
               <div v-for="qa in item.verify_info?.review_qa_list || []" :key="qa.question" class="answer"><span>{{ qa.question }}</span><strong>{{ qa.answer }}</strong></div>
               <div v-if="item.auto_strategy_id" class="auto-note">由策略 {{ item.auto_strategy_id }} 自动通过</div>
             </div>
-            <div v-if="item.status === 'pending'" class="decision-box">
+            <div v-if="item.status === 'pending' && manualApprovalEnabled" class="decision-box">
               <button class="btn primary" :disabled="busy === item.join_request_id" @click="decide(item, 'approve')">通过</button>
               <details>
                 <summary>拒绝选项</summary>
@@ -516,12 +535,12 @@ onMounted(async () => {
         <div class="two-column">
           <section class="card panel">
             <h2 class="section-title">新建自动审批策略</h2>
-            <p class="section-sub">可按普通QQ群号，也可按机器人事件中的群 OpenID 建立策略。</p>
-            <div class="mode-cards"><label :class="{selected:createMode==='group_ids'}"><input v-model="createMode" type="radio" value="group_ids"><b>按QQ群号</b><span>适合用户知道群号的常规场景</span></label><label :class="{selected:createMode==='group_openids'}"><input v-model="createMode" type="radio" value="group_openids"><b>按群 OpenID</b><span>适合从事件自动识别的群</span></label></div>
-            <div class="field"><label>{{ createMode === 'group_ids' ? 'QQ群号' : '群 OpenID' }}</label><textarea v-model="createGroups" class="textarea" rows="5" :placeholder="createMode === 'group_ids' ? '每行一个QQ群号，最多100个' : '每行一个群 OpenID，最多100个'"></textarea></div>
+            <p class="section-sub">直接选择事件自动识别的群，平台会把群 OpenID 交给QQ官方接口。</p>
+            <div v-if="!status.groups.length" class="empty-row">尚未识别群。请先让机器人收到该群事件，再刷新本页。</div>
+            <div v-else class="group-select-list"><label v-for="group in status.groups" :key="group.group_openid"><input v-model="createGroups" type="checkbox" :value="group.group_openid"><span><b>{{ group.group_name || '未获取群名' }}</b><small>{{ group.group_id ? `群号 ${group.group_id}` : `OpenID ${shortId(group.group_openid)}` }}<template v-if="group.group_member_num"> · {{ group.group_member_num }}人</template></small></span></label></div>
             <div class="form-grid"><div class="field"><label>策略备注</label><input v-model="createRemark" class="input" maxlength="255" placeholder="例如：付费会员群"></div><div class="field"><label>过期时间</label><input v-model="createExpire" class="input" type="datetime-local"><small>不填默认一年</small></div></div>
             <label class="check standalone"><input v-model="createEnabled" type="checkbox">创建后立即启用</label>
-            <button class="btn primary full" :disabled="busy === 'create-strategy'" @click="createStrategy">{{ busy === 'create-strategy' ? '创建中…' : '创建策略' }}</button>
+            <button class="btn primary full" :disabled="busy === 'create-strategy' || !autoApprovalEnabled" @click="createStrategy">{{ busy === 'create-strategy' ? '创建中…' : '创建策略' }}</button>
           </section>
 
           <section class="card panel">
@@ -529,7 +548,7 @@ onMounted(async () => {
             <div class="field"><label>目标策略</label><select v-model="whitelistStrategyId" class="select"><option disabled value="">请先选择策略</option><option v-for="item in strategies" :key="item.strategy_id" :value="item.strategy_id">{{ item.remark || item.strategy_id }} · 当前约{{ item.whitelist_user_count }}人</option></select></div>
             <div class="field"><label>操作方式</label><select v-model="whitelistOp" class="select"><option value="add">添加白名单</option><option value="del">删除白名单</option></select></div>
             <div class="field"><label>QQ号码</label><textarea v-model="whitelistUsers" class="textarea" rows="8" placeholder="每行一个QQ号，也可以用逗号分隔"></textarea></div>
-            <button class="btn primary full" :disabled="busy === 'whitelist' || !strategies.length" @click="updateWhitelist">{{ busy === 'whitelist' ? '处理中…' : '提交白名单' }}</button>
+            <button class="btn primary full" :disabled="busy === 'whitelist' || !strategies.length || !autoApprovalEnabled" @click="updateWhitelist">{{ busy === 'whitelist' ? '处理中…' : '提交白名单' }}</button>
           </section>
         </div>
 
@@ -538,10 +557,11 @@ onMounted(async () => {
           <div v-if="!strategies.length" class="empty-row">暂无自动审批策略。</div>
           <article v-for="item in strategies" :key="item.strategy_id" class="strategy-card">
             <div class="strategy-info"><div><strong>{{ item.remark || '未命名策略' }}</strong><span :class="item.is_enable === 'on' ? 'on' : 'off'">{{ item.is_enable === 'on' ? '已启用' : '已停用' }}</span></div><small class="mono">{{ item.strategy_id }}</small><p>关联群 {{ (item.group_openids?.length || item.group_ids?.length || 0) }} 个 · 白名单约 {{ item.whitelist_user_count }} 人 · 到期 {{ formatTime(item.expire_at) }}</p></div>
-            <div class="strategy-actions"><button class="mini" @click="toggleStrategy(item)">{{ item.is_enable === 'on' ? '停用' : '启用' }}</button><button class="mini" @click="openGroupEditor(item)">编辑</button><button class="mini primary-text" :disabled="item.is_enable !== 'on'" @click="executeStrategy(item)">扫描现有申请</button><button class="mini danger-text" @click="removeStrategy(item)">删除</button></div>
+            <div class="strategy-actions"><button class="mini" :disabled="item.is_enable === 'off' && !autoApprovalEnabled" @click="toggleStrategy(item)">{{ item.is_enable === 'on' ? '停用' : '启用' }}</button><button class="mini" @click="openGroupEditor(item)">编辑</button><button class="mini primary-text" :disabled="item.is_enable !== 'on' || !autoApprovalEnabled" @click="executeStrategy(item)">扫描现有申请</button><button class="mini danger-text" @click="removeStrategy(item)">删除</button></div>
             <div v-if="editingStrategy === item.strategy_id" class="group-editor">
               <div class="editor-details"><div class="field"><label>策略备注</label><input v-model="strategyRemark" class="input" maxlength="255"></div><div class="field"><label>到期时间</label><input v-model="strategyExpire" class="input" type="datetime-local"></div><button class="btn" :disabled="busy === `details-${item.strategy_id}`" @click="updateStrategyDetails(item)">保存基本信息</button></div>
-              <div class="editor-groups"><select v-model="strategyGroupOp" class="select"><option value="add">新增关联群</option><option value="del">移除关联群</option></select><select v-model="strategyGroupMode" class="select" disabled><option value="group_ids">使用QQ群号</option><option value="group_openids">使用群 OpenID</option></select><textarea v-model="strategyGroupValues" class="textarea" rows="3" placeholder="每行一个群；标识方式与创建策略时保持一致"></textarea><button class="btn" :disabled="busy === `groups-${item.strategy_id}`" @click="updateStrategyGroups(item)">保存关联群</button></div>
+              <div v-if="strategyGroupMode === 'group_openids'" class="editor-groups"><select v-model="strategyGroupOp" class="select"><option value="add">新增关联群</option><option value="del">移除关联群</option></select><select v-model="strategyGroupValues" class="select" multiple><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || shortId(group.group_openid) }}</option></select><button class="btn" :disabled="busy === `groups-${item.strategy_id}`" @click="updateStrategyGroups(item)">保存关联群</button></div>
+              <p v-else class="legacy-note">这是历史群号策略，可继续启停和扫描；新建及新增关联统一使用自动识别的群 OpenID。</p>
             </div>
           </article>
         </section>
@@ -550,9 +570,9 @@ onMounted(async () => {
       <template v-else-if="status && tab === 'mutes'">
         <section class="card panel mute-form">
           <div><h2 class="section-title">查询和设置成员禁言</h2><p class="section-sub">所有操作直接调用QQ官方接口；不能禁言群主、管理员或机器人。</p></div>
-          <div class="inline-form"><input v-model="muteGroup" class="input mono" list="mute-groups" placeholder="选择或粘贴群 OpenID"><datalist id="mute-groups"><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || shortId(group.group_openid) }}</option></datalist><button class="btn" :disabled="busy === 'load-mutes'" @click="loadMutes">查询当前禁言</button></div>
-          <div class="mute-fields"><div class="field"><label>填写方式</label><select v-model="muteMode" class="select"><option value="single">单个成员</option><option value="batch">批量成员（最多10名）</option></select></div><div class="field"><label>操作</label><select v-model="muteOp" class="select"><option value="add">新增禁言</option><option value="update">修改结束时间</option></select></div><div class="field"><label>禁言时长</label><select v-model="muteDuration" class="select"><option value="10">10分钟</option><option value="60">1小时</option><option value="1440">24小时</option><option value="10080">7天</option><option value="43200">30天</option><option value="custom">自定义结束时间</option></select></div><div v-if="muteDuration === 'custom'" class="field"><label>结束时间</label><input v-model="muteCustomEnd" class="input" type="datetime-local"></div></div>
-          <div class="field mute-members"><label>成员 OpenID</label><textarea v-model="muteMember" class="textarea mono" :rows="muteMode === 'batch' ? 5 : 2" :placeholder="muteMode === 'batch' ? '每行一个成员 OpenID，最多10名' : '从下方禁言列表复制，或从事件记录获取'"></textarea><small v-if="muteMode === 'batch'">本次会为所有成员使用相同的操作和结束时间。</small></div>
+          <div class="inline-form"><select v-model="muteGroup" class="select"><option disabled value="">选择已识别群</option><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || shortId(group.group_openid) }}</option></select><button class="btn" :disabled="busy === 'load-mutes'" @click="loadMutes">查询当前禁言</button></div>
+          <div class="mute-fields"><div class="field"><label>操作</label><select v-model="muteOp" class="select"><option value="add">新增禁言</option><option value="update">修改结束时间</option></select></div><div class="field"><label>禁言时长</label><select v-model="muteDuration" class="select"><option value="10">10分钟</option><option value="60">1小时</option><option value="1440">24小时</option><option value="10080">7天</option><option value="43200">30天</option><option value="custom">自定义结束时间</option></select></div><div v-if="muteDuration === 'custom'" class="field"><label>结束时间</label><input v-model="muteCustomEnd" class="input" type="datetime-local"></div></div>
+          <div class="field mute-members"><label>已识别成员（最多10名）</label><select v-model="muteMember" class="select" multiple size="6"><option v-for="member in knownMuteMembers" :key="member.member_openid" :value="member.member_openid">{{ member.username || shortId(member.member_openid) }}</option></select><small v-if="!knownMuteMembers.length">该群尚无成员事件或入群申请记录，无需手填 OpenID。</small></div>
           <button class="btn primary" :disabled="busy === 'apply-mute'" @click="applyMute">{{ muteOp === 'add' ? '确认禁言' : '更新禁言' }}</button>
         </section>
 
@@ -564,8 +584,8 @@ onMounted(async () => {
         </section>
       </template>
 
-      <section v-else-if="tab === 'legacy'" class="card panel legacy-panel">
-        <h2 class="section-title">入群后兼容验证</h2><p>成员入群后可选择数学题验证，或先官方禁言再由管理员人工审核。新群建议优先使用官方群审批。</p><RouterLink :to="`/group-verification-legacy?bot=${botId}`" class="btn">打开兼容验证设置</RouterLink>
+      <section v-else-if="tab === 'verification'" class="card panel legacy-panel">
+        <h2 class="section-title">入群后验证</h2><p>与入群前审批独立开关。数学题和自定义问题都保留；错误消息撤回，达到错误上限或超时后调用QQ官方禁言。</p><RouterLink :to="`/group-verification?bot=${botId}`" class="btn primary">打开验证设置与成员记录</RouterLink>
       </section>
 
       <p v-if="message" class="notice ok">{{ message }}</p>
@@ -576,4 +596,5 @@ onMounted(async () => {
 
 <style scoped>
 .management-page{max-width:1280px}.empty,.loading{padding:32px}.toolbar{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:16px}.bot-picker{width:min(500px,100%)}.event-state{display:flex;align-items:center;gap:14px;padding:10px 12px;border-radius:13px;background:var(--bg-sunken)}.event-state div strong,.event-state div small{display:block}.event-state small{margin-top:3px;color:var(--ink-4);font-size:10px}.event-state.ready strong{color:#238541}.event-state.warn strong{color:var(--warn)}.tabs{display:flex;gap:6px;margin-bottom:18px;padding:5px;border:1px solid var(--line);border-radius:15px;background:white;width:max-content;max-width:100%;overflow:auto}.tabs button{padding:9px 13px;border-radius:10px;color:var(--ink-3);font-size:12px;font-weight:700;white-space:nowrap}.tabs button.active{background:var(--accent-soft);color:var(--accent)}.tabs span{margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(0,0,0,.06)}.panel{padding:22px;margin-bottom:18px}.sync-panel{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(360px,1.2fr);gap:18px;align-items:end}.inline-form{display:flex;gap:9px}.inline-form .input{flex:1}.group-chips{grid-column:1/-1;display:flex;gap:7px;flex-wrap:wrap}.group-chips button{padding:5px 9px;border:1px solid var(--line);border-radius:999px;color:var(--ink-3);font-size:10px}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.filters{display:flex;gap:5px}.filters button,.mini{padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink-3);font-size:10.5px}.filters button.active{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent)}.empty-row{padding:30px 0;text-align:center;color:var(--ink-4);font-size:12px}.request-card{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:18px;padding:18px 0;border-top:1px solid var(--line)}.request-title{display:flex;align-items:center;gap:8px}.request-title strong{font-size:14px}.state{padding:3px 7px;border-radius:999px;font-size:9px;font-weight:750}.state.pending{background:rgba(255,149,0,.12);color:var(--warn)}.state.approved,.state.auto_approved{background:rgba(52,199,89,.12);color:#238541}.state.declined{background:rgba(255,59,48,.1);color:var(--danger)}.request-main>small{display:block;margin-top:5px;color:var(--ink-4);font-size:10px}.risk,.answer,.auto-note{margin-top:11px;padding:10px;border-radius:10px;background:var(--bg-sunken);font-size:11px;line-height:1.55}.risk{background:rgba(255,149,0,.09);color:#815500}.risk strong,.answer span,.answer strong{display:block}.answer span{color:var(--ink-4);font-size:10px}.answer strong{margin-top:3px}.auto-note{color:#238541}.decision-box{display:flex;flex-direction:column;gap:8px}.decision-box details{padding:9px;border:1px solid var(--line);border-radius:11px}.decision-box summary{cursor:pointer;color:var(--danger);font-size:11px;font-weight:700}.decision-box details .input,.decision-box details .check,.decision-box details .btn{margin-top:9px;width:100%}.check{display:flex;align-items:center;gap:7px;font-size:11px}.check input{accent-color:var(--accent)}.two-column{display:grid;grid-template-columns:1fr 1fr;gap:18px}.mode-cards{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:16px 0}.mode-cards label{padding:12px;border:1px solid var(--line);border-radius:11px}.mode-cards label.selected{border-color:var(--accent-border);background:var(--accent-soft)}.mode-cards input{display:none}.mode-cards b,.mode-cards span{display:block}.mode-cards b{font-size:12px}.mode-cards span{margin-top:4px;color:var(--ink-4);font-size:9.5px;line-height:1.4}.textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:white;color:var(--ink);font:inherit;line-height:1.5}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field small{display:block;margin-top:5px;color:var(--ink-4);font-size:9.5px}.standalone{margin:13px 0}.full{width:100%;justify-content:center}.strategy-list{margin-top:18px}.strategy-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:16px 0;border-top:1px solid var(--line)}.strategy-info>div{display:flex;align-items:center;gap:8px}.strategy-info span{padding:3px 6px;border-radius:999px;font-size:9px}.strategy-info span.on{background:rgba(52,199,89,.12);color:#238541}.strategy-info span.off{background:rgba(60,60,67,.08);color:var(--ink-4)}.strategy-info small,.strategy-info p{display:block;margin:5px 0 0;color:var(--ink-4);font-size:10px}.strategy-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.primary-text{color:var(--accent)!important}.danger-text{color:var(--danger)!important}.group-editor{grid-column:1/-1;display:flex;flex-direction:column;gap:12px;padding:12px;border-radius:11px;background:var(--bg-sunken)}.editor-details{display:grid;grid-template-columns:1fr 260px auto;gap:8px;align-items:end}.editor-groups{display:grid;grid-template-columns:170px 180px 1fr auto;gap:8px;align-items:start}.mute-form .inline-form{margin-top:16px}.mute-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.mute-members{margin-bottom:14px}.mode-pill{padding:5px 8px;border-radius:999px;background:var(--bg-sunken);color:var(--ink-3);font-size:10px}.mute-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}.mute-row strong,.mute-row small{display:block}.mute-row small{margin-top:4px;color:var(--ink-4);font-size:10px}.mute-row>div:last-child{display:flex;gap:6px}.legacy-panel p{max-width:700px;margin:10px 0 16px;color:var(--ink-3);font-size:12px;line-height:1.7}.notice{position:sticky;bottom:14px;z-index:10;margin:14px 0 0;padding:12px 14px;border-radius:12px;box-shadow:var(--shadow-sm);font-size:12px}.notice.ok{background:#eaf8ee;color:#237b3b}.notice.error{background:#fff0ef;color:var(--danger)}@media(max-width:900px){.sync-panel,.two-column{grid-template-columns:1fr}.editor-details,.editor-groups{grid-template-columns:1fr 1fr}.editor-groups .textarea,.editor-groups .btn{grid-column:1/-1}.mute-fields{grid-template-columns:1fr 1fr}.toolbar{align-items:stretch;flex-direction:column}.event-state{justify-content:space-between}}@media(max-width:650px){.tabs{width:100%}.request-card,.strategy-card{grid-template-columns:1fr}.decision-box{max-width:none}.strategy-actions{justify-content:flex-start}.inline-form{flex-direction:column}.mode-cards,.form-grid,.mute-fields,.editor-details,.editor-groups{grid-template-columns:1fr}.sync-panel{display:block}.sync-panel>div+div{margin-top:14px}.group-chips{margin-top:12px}}
+.feature-switches{display:grid;grid-template-columns:minmax(240px,1fr) repeat(2,minmax(180px,.7fr)) auto;gap:12px;align-items:center}.switch-card,.group-select-list label{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg-sunken)}.switch-card input,.group-select-list input{accent-color:var(--accent)}.switch-card span,.switch-card b,.switch-card small,.group-select-list span,.group-select-list b,.group-select-list small{display:block}.switch-card small,.group-select-list small{margin-top:4px;color:var(--ink-4);font-size:9.5px}.group-select-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}.legacy-note{color:var(--ink-4);font-size:10.5px}.select[multiple]{min-height:110px}@media(max-width:1000px){.feature-switches{grid-template-columns:1fr 1fr}.feature-switches>div{grid-column:1/-1}}@media(max-width:650px){.feature-switches,.group-select-list{grid-template-columns:1fr}}
 </style>

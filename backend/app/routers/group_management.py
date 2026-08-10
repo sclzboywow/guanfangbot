@@ -9,6 +9,7 @@ from app.models.schemas import (
     ApprovalStrategyUpdate,
     ApprovalWhitelistUpdate,
     BotUpdate,
+    GroupManagementSettingsUpdate,
     OfficialJoinDecision,
     OfficialMuteUpdate,
 )
@@ -16,6 +17,7 @@ from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.group_management_repository import group_management_repository
 from app.services.group_management_service import REQUIRED_EVENTS, group_management_service
+from app.services.group_verification_repository import group_verification_repository
 
 
 router = APIRouter(prefix="/group-management", tags=["group-management"])
@@ -24,6 +26,18 @@ router = APIRouter(prefix="/group-management", tags=["group-management"])
 def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
     bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
+    known_members = {
+        (item["group_openid"], item["member_openid"]): item
+        for item in group_management_repository.known_members(bot_id)
+    }
+    for session in group_verification_repository.list_sessions(bot_id, limit=1000):
+        key = (str(session["group_openid"]), str(session["member_openid"]))
+        known_members[key] = {
+            "group_openid": key[0],
+            "member_openid": key[1],
+            "username": str(session.get("member_name") or known_members.get(key, {}).get("username") or ""),
+            "last_seen_at": str(session.get("last_message_at") or session.get("joined_at") or ""),
+        }
     return {
         "bot_id": bot.id,
         "app_id": bot.app_id,
@@ -33,7 +47,9 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
             for code in REQUIRED_EVENTS
         ],
         "requirements_ready": all(code in configured for code in REQUIRED_EVENTS),
+        "settings": group_management_repository.get_settings(bot_id),
         "groups": group_management_repository.list_groups(bot_id),
+        "known_members": list(known_members.values()),
         "join_requests": group_management_repository.list_join_requests(bot_id),
         "logs": group_management_repository.list_logs(bot_id, limit=100),
         "limits": {
@@ -50,6 +66,20 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
 
 @router.get("/status")
 def status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    return _status(bot_id, user)
+
+
+@router.put("/settings/{bot_id}")
+async def update_settings(
+    bot_id: str,
+    payload: GroupManagementSettingsUpdate,
+    user: AuthUser = Depends(require_user),
+) -> dict[str, Any]:
+    require_owned_bot(bot_id, user)
+    current = group_management_repository.get_settings(bot_id)
+    if current["auto_approval_enabled"] and not payload.auto_approval_enabled:
+        await group_management_service.disable_enabled_strategies(bot_id)
+    group_management_repository.update_settings(bot_id, **payload.model_dump())
     return _status(bot_id, user)
 
 

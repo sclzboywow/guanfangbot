@@ -113,40 +113,43 @@ class BotUpdate(BaseModel):
 
 class GroupVerificationSettingsUpdate(BaseModel):
     enabled: bool = False
-    verification_mode: Literal["math", "manual_mute"] = "math"
+    math_enabled: bool = True
+    custom_question_enabled: bool = False
+    combination_mode: Literal["all", "random_one"] = "all"
+    custom_question: str = Field(default="请回答本群的入群验证问题", min_length=1, max_length=200)
+    custom_answers: list[str] = Field(default_factory=list, max_length=20)
+    custom_ignore_case: bool = True
     min_operand: int = Field(default=1, ge=0, le=100)
     max_operand: int = Field(default=20, ge=1, le=100)
-    verification_timeout_minutes: int = Field(default=3, ge=1, le=1440)
+    timeout_seconds: int = Field(default=180, ge=30, le=3600)
     max_wrong_attempts: int = Field(default=3, ge=1, le=20)
-    failure_action: Literal["mute", "retract_only"] = "mute"
     failure_mute_minutes: int = Field(default=1440, ge=1, le=43200)
     success_message: str = Field(default="验证通过，你现在可以正常发言。", min_length=1, max_length=200)
-    manual_review_message: str = Field(
-        default="新成员正在等待管理员审核，审核通过后恢复发言。",
-        min_length=1,
-        max_length=200,
-    )
 
-    @field_validator("success_message")
+    @field_validator("success_message", "custom_question")
     @classmethod
-    def normalize_success_message(cls, value: str) -> str:
+    def normalize_verification_text(cls, value: str) -> str:
         cleaned = " ".join(value.split())
         if not cleaned:
-            raise ValueError("验证成功提示不能为空")
+            raise ValueError("验证内容不能为空")
         return cleaned
 
-    @field_validator("manual_review_message")
+    @field_validator("custom_answers")
     @classmethod
-    def normalize_manual_review_message(cls, value: str) -> str:
-        cleaned = " ".join(value.split())
-        if not cleaned:
-            raise ValueError("人工审核提示不能为空")
+    def normalize_custom_answers(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(" ".join(str(item).split()) for item in value if str(item).strip()))
+        if any(len(item) > 100 for item in cleaned):
+            raise ValueError("单个自定义答案不能超过100字")
         return cleaned
 
     @model_validator(mode="after")
     def validate_range(self) -> "GroupVerificationSettingsUpdate":
         if self.max_operand < self.min_operand:
             raise ValueError("最大数字不能小于最小数字")
+        if self.enabled and not (self.math_enabled or self.custom_question_enabled):
+            raise ValueError("启用入群验证时，数学题和自定义问题至少开启一种")
+        if self.custom_question_enabled and not self.custom_answers:
+            raise ValueError("启用自定义问题时，请至少设置一个正确答案")
         return self
 
 
@@ -170,6 +173,11 @@ class OfficialJoinDecision(BaseModel):
     @classmethod
     def clean_reject_reason(cls, value: str) -> str:
         return " ".join(value.split())
+
+
+class GroupManagementSettingsUpdate(BaseModel):
+    manual_approval_enabled: bool = True
+    auto_approval_enabled: bool = True
 
 
 class OfficialMuteMember(BaseModel):

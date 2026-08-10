@@ -23,6 +23,7 @@ from app.services.auth_deps import get_optional_user
 from app.services.bootstrap import bootstrap_auth_and_ownership
 from app.services.group_verification_service import group_verification_service
 from app.services.log_retention import install_log_retention
+from app.services.group_verification_service import group_verification_service
 
 settings = get_settings()
 

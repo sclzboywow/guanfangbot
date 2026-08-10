@@ -38,10 +38,24 @@ class GroupManagementRepository:
                 CREATE TABLE IF NOT EXISTS managed_groups (
                     bot_id TEXT NOT NULL,
                     group_openid TEXT NOT NULL,
+                    group_id TEXT NOT NULL DEFAULT '',
                     group_name TEXT NOT NULL DEFAULT '',
+                    group_finger_memo TEXT NOT NULL DEFAULT '',
+                    group_class_text TEXT NOT NULL DEFAULT '',
+                    group_tags TEXT NOT NULL DEFAULT '[]',
+                    group_member_num INTEGER,
                     source TEXT NOT NULL DEFAULT 'event',
+                    info_synced_at TEXT,
+                    info_sync_error TEXT NOT NULL DEFAULT '',
                     last_seen_at TEXT NOT NULL,
                     PRIMARY KEY(bot_id, group_openid)
+                );
+
+                CREATE TABLE IF NOT EXISTS group_management_settings (
+                    bot_id TEXT PRIMARY KEY,
+                    manual_approval_enabled INTEGER NOT NULL DEFAULT 1,
+                    auto_approval_enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS official_join_requests (
@@ -88,38 +102,135 @@ class GroupManagementRepository:
                     ON group_management_logs(bot_id, created_at DESC);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(managed_groups)").fetchall()
+            }
+            for name, definition in {
+                "group_id": "TEXT NOT NULL DEFAULT ''",
+                "group_finger_memo": "TEXT NOT NULL DEFAULT ''",
+                "group_class_text": "TEXT NOT NULL DEFAULT ''",
+                "group_tags": "TEXT NOT NULL DEFAULT '[]'",
+                "group_member_num": "INTEGER",
+                "info_synced_at": "TEXT",
+                "info_sync_error": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE managed_groups ADD COLUMN {name} {definition}")
 
     def remember_group(
         self,
         bot_id: str,
         group_openid: str,
         *,
+        group_id: str = "",
         group_name: str = "",
+        group_finger_memo: str = "",
+        group_class_text: str = "",
+        group_tags: list[str] | None = None,
+        group_member_num: int | None = None,
         source: str = "event",
-    ) -> None:
+        info_synced: bool = False,
+        info_sync_error: str = "",
+    ) -> bool:
         cleaned = str(group_openid or "").strip()
         if not cleaned:
-            return
+            return False
         with self._lock, self._connect() as connection:
+            existed = connection.execute(
+                "SELECT 1 FROM managed_groups WHERE bot_id=? AND group_openid=?",
+                (bot_id, cleaned),
+            ).fetchone() is not None
             connection.execute(
                 """
-                INSERT INTO managed_groups(bot_id, group_openid, group_name, source, last_seen_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO managed_groups(
+                    bot_id, group_openid, group_id, group_name, group_finger_memo,
+                    group_class_text, group_tags, group_member_num, source,
+                    info_synced_at, info_sync_error, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id, group_openid) DO UPDATE SET
+                    group_id=CASE WHEN excluded.group_id!='' THEN excluded.group_id ELSE managed_groups.group_id END,
                     group_name = CASE
                         WHEN excluded.group_name != '' THEN excluded.group_name
                         ELSE managed_groups.group_name
                     END,
+                    group_finger_memo=CASE WHEN excluded.group_finger_memo!='' THEN excluded.group_finger_memo ELSE managed_groups.group_finger_memo END,
+                    group_class_text=CASE WHEN excluded.group_class_text!='' THEN excluded.group_class_text ELSE managed_groups.group_class_text END,
+                    group_tags=CASE WHEN excluded.group_tags!='[]' THEN excluded.group_tags ELSE managed_groups.group_tags END,
+                    group_member_num=COALESCE(excluded.group_member_num, managed_groups.group_member_num),
                     source = excluded.source,
+                    info_synced_at=COALESCE(excluded.info_synced_at, managed_groups.info_synced_at),
+                    info_sync_error=excluded.info_sync_error,
                     last_seen_at = excluded.last_seen_at
                 """,
-                (bot_id, cleaned, str(group_name or "").strip(), source, utc_now()),
+                (
+                    bot_id, cleaned, str(group_id or "").strip(), str(group_name or "").strip(),
+                    str(group_finger_memo or "").strip(), str(group_class_text or "").strip(),
+                    json.dumps(group_tags or [], ensure_ascii=False), group_member_num, source,
+                    utc_now() if info_synced else None, str(info_sync_error or "")[:500], utc_now(),
+                ),
             )
+        return not existed
 
     def list_groups(self, bot_id: str) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM managed_groups WHERE bot_id=? ORDER BY last_seen_at DESC",
+                (bot_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["group_tags"] = json.loads(item.get("group_tags") or "[]")
+            except ValueError:
+                item["group_tags"] = []
+            result.append(item)
+        return result
+
+    def get_settings(self, bot_id: str) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM group_management_settings WHERE bot_id=?", (bot_id,)
+            ).fetchone()
+        if row is None:
+            return {
+                "bot_id": bot_id,
+                "manual_approval_enabled": True,
+                "auto_approval_enabled": True,
+                "updated_at": None,
+            }
+        result = dict(row)
+        result["manual_approval_enabled"] = bool(result["manual_approval_enabled"])
+        result["auto_approval_enabled"] = bool(result["auto_approval_enabled"])
+        return result
+
+    def update_settings(
+        self,
+        bot_id: str,
+        *,
+        manual_approval_enabled: bool,
+        auto_approval_enabled: bool,
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO group_management_settings(
+                    bot_id, manual_approval_enabled, auto_approval_enabled, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(bot_id) DO UPDATE SET
+                    manual_approval_enabled=excluded.manual_approval_enabled,
+                    auto_approval_enabled=excluded.auto_approval_enabled,
+                    updated_at=excluded.updated_at""",
+                (bot_id, int(manual_approval_enabled), int(auto_approval_enabled), utc_now()),
+            )
+        return self.get_settings(bot_id)
+
+    def known_members(self, bot_id: str) -> list[dict[str, str]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """SELECT group_openid, member_openid, MAX(username) AS username,
+                MAX(updated_at) AS last_seen_at FROM official_join_requests
+                WHERE bot_id=? GROUP BY group_openid, member_openid ORDER BY last_seen_at DESC""",
                 (bot_id,),
             ).fetchall()
         return [dict(row) for row in rows]

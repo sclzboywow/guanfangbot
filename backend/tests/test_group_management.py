@@ -191,3 +191,37 @@ def test_whitelist_is_split_into_official_batch_limit(tmp_path: Path) -> None:
     assert len(client.requests) == 2
     assert len(client.requests[0][3]["whitelist_users"]) == 10000
     assert len(client.requests[1][3]["whitelist_users"]) == 1
+
+
+def test_group_registry_keeps_official_group_metadata_and_switches(tmp_path: Path) -> None:
+    repository = GroupManagementRepository(tmp_path / "management.db")
+    repository.remember_group(
+        "bot-1", "group-openid", group_id="123456", group_name="测试群",
+        group_finger_memo="群简介", group_class_text="科技",
+        group_tags=["机器人", "开发"], group_member_num=88,
+        source="group_info_api", info_synced=True,
+    )
+    group = repository.list_groups("bot-1")[0]
+    assert group["group_id"] == "123456"
+    assert group["group_tags"] == ["机器人", "开发"]
+    assert group["group_member_num"] == 88
+    settings = repository.update_settings(
+        "bot-1", manual_approval_enabled=False, auto_approval_enabled=True,
+    )
+    assert settings["manual_approval_enabled"] is False
+    assert settings["auto_approval_enabled"] is True
+
+
+def test_disabling_auto_approval_disables_each_enabled_official_strategy(tmp_path: Path) -> None:
+    client = FakeClient([
+        {"status_code": 200, "data": {"strategies": [
+            {"strategy_id": "enabled", "is_enable": "on"},
+            {"strategy_id": "disabled", "is_enable": "off"},
+        ]}},
+        {"status_code": 200, "data": {"strategy_id": "enabled", "is_enable": "off"}},
+    ])
+    service, _ = service_with_client(tmp_path / "management.db", client)
+    assert asyncio.run(service.disable_enabled_strategies("bot-1")) == 1
+    assert client.requests[1] == (
+        "PATCH", "/v2/groups/join_approval_strategy/enabled", None, {"is_enable": "off"},
+    )

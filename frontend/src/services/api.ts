@@ -85,15 +85,18 @@ export interface EventStatusResponse {
 export interface GroupVerificationSettings {
   bot_id: string
   enabled: boolean
-  verification_mode: 'math' | 'manual_mute'
+  math_enabled: boolean
+  custom_question_enabled: boolean
+  combination_mode: 'all' | 'random_one'
+  custom_question: string
+  custom_answers: string[]
+  custom_ignore_case: boolean
   min_operand: number
   max_operand: number
-  verification_timeout_minutes: number
+  timeout_seconds: number
   max_wrong_attempts: number
-  failure_action: 'mute' | 'retract_only'
   failure_mute_minutes: number
   success_message: string
-  manual_review_message: string
   updated_at?: string | null
 }
 
@@ -108,13 +111,17 @@ export interface GroupVerificationSession {
   operator: '+' | '-'
   answer: number
   question: string
+  challenge_type: 'math' | 'custom'
+  accepted_answers: string[]
+  required_challenges: string[]
+  completed_challenges: string[]
   status: 'pending' | 'verified' | 'failed' | 'removed'
   joined_at: string
   deadline_at?: string | null
   verified_at?: string | null
   failed_at?: string | null
   failure_reason: string
-  muted_until?: string | null
+  mute_expire_at?: string | null
   removed_at?: string | null
   wrong_attempts: number
   retracted_messages: number
@@ -147,8 +154,7 @@ export interface GroupVerificationStatus {
     answer_requires_at: boolean
     pending_messages_retracted: boolean
     verification_expires: boolean
-    official_mute_on_failure: boolean
-    verification_mode: 'math' | 'manual_mute'
+    failure_uses_official_mute: boolean
     outbound_messages_single_line: boolean
   }
 }
@@ -156,8 +162,15 @@ export interface GroupVerificationStatus {
 export interface ManagedGroup {
   bot_id: string
   group_openid: string
+  group_id: string
   group_name: string
+  group_finger_memo: string
+  group_class_text: string
+  group_tags: string[]
+  group_member_num?: number | null
   source: string
+  info_synced_at?: string | null
+  info_sync_error: string
   last_seen_at: string
 }
 
@@ -190,7 +203,14 @@ export interface GroupManagementStatus {
   bot_name: string
   required_events: Array<{ code: string; configured: boolean }>
   requirements_ready: boolean
+  settings: {
+    bot_id: string
+    manual_approval_enabled: boolean
+    auto_approval_enabled: boolean
+    updated_at?: string | null
+  }
   groups: ManagedGroup[]
+  known_members: Array<{ group_openid: string; member_openid: string; username: string; last_seen_at: string }>
   join_requests: OfficialJoinRequest[]
   logs: Array<{
     id: number
@@ -329,6 +349,8 @@ export const api = {
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),
   closeGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' }),
   groupManagementStatus: (botId: string) => request<GroupManagementStatus>(`/group-management/status?bot_id=${encodeURIComponent(botId)}`),
+  updateGroupManagementSettings: (botId: string, payload: { manual_approval_enabled: boolean; auto_approval_enabled: boolean }) =>
+    request<GroupManagementStatus>(`/group-management/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   enableGroupManagementEvents: (botId: string) => request<GroupManagementStatus>(`/group-management/events/${encodeURIComponent(botId)}/enable`, { method: 'POST' }),
   syncJoinRequests: (botId: string, groupOpenid: string) =>
     request<{ sync: { synced: number; pages: number; truncated: boolean }; status: GroupManagementStatus }>(`/group-management/join-requests/sync?bot_id=${encodeURIComponent(botId)}&group_openid=${encodeURIComponent(groupOpenid)}`, { method: 'POST' }),

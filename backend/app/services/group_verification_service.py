@@ -12,7 +12,7 @@ from app.services.group_verification_repository import (
     GroupVerificationRepository,
     group_verification_repository,
 )
-from app.services.group_mute_repository import GroupMuteLeaseRepository, parse_time
+from app.services.group_mute_repository import GroupMuteLeaseRepository
 from app.services.group_mute_service import GroupMuteCoordinator, group_mute_coordinator
 from app.services.qqbot_client import QQBotClient, client_manager
 
@@ -25,7 +25,6 @@ def utc_now() -> str:
 
 
 def single_line(value: str) -> str:
-    """Collapse all whitespace so every outbound group message stays on one line."""
     return " ".join(str(value).split())
 
 
@@ -61,9 +60,7 @@ def _event_data(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _first_text(*values: Any) -> str:
     for value in values:
-        if value is None:
-            continue
-        text = str(value).strip()
+        text = str(value or "").strip()
         if text:
             return text
     return ""
@@ -72,12 +69,17 @@ def _first_text(*values: Any) -> str:
 def extract_group_openid(payload: dict[str, Any]) -> str:
     data = _event_data(payload)
     group = _dict(data.get("group"))
-    return _first_text(
-        data.get("group_openid"),
-        data.get("group_id"),
-        group.get("openid"),
-        group.get("id"),
-    )
+    return _first_text(data.get("group_openid"), data.get("group_id"), group.get("openid"), group.get("id"))
+
+
+def extract_group_number(payload: dict[str, Any]) -> str:
+    data = _event_data(payload)
+    group = _dict(data.get("group"))
+    for value in (data.get("group_id"), data.get("group_number"), group.get("id"), group.get("group_id")):
+        text = str(value or "").strip()
+        if text.isdigit():
+            return text
+    return ""
 
 
 def extract_member_openid(payload: dict[str, Any]) -> str:
@@ -87,22 +89,11 @@ def extract_member_openid(payload: dict[str, Any]) -> str:
     member_user = _dict(member.get("user"))
     user = _dict(data.get("user"))
     return _first_text(
-        data.get("member_openid"),
-        data.get("group_member_openid"),
-        data.get("user_openid"),
-        data.get("openid"),
-        author.get("member_openid"),
-        author.get("group_member_openid"),
-        author.get("user_openid"),
-        author.get("openid"),
-        author.get("id"),
-        member.get("member_openid"),
-        member.get("openid"),
-        member.get("user_openid"),
-        member_user.get("id"),
-        member_user.get("openid"),
-        user.get("id"),
-        user.get("openid"),
+        data.get("member_openid"), data.get("group_member_openid"), data.get("user_openid"),
+        data.get("openid"), author.get("member_openid"), author.get("group_member_openid"),
+        author.get("user_openid"), author.get("openid"), author.get("id"),
+        member.get("member_openid"), member.get("openid"), member.get("user_openid"),
+        member_user.get("id"), member_user.get("openid"), user.get("id"), user.get("openid"),
     )
 
 
@@ -113,20 +104,10 @@ def extract_member_name(payload: dict[str, Any]) -> str:
     member_user = _dict(member.get("user"))
     user = _dict(data.get("user"))
     return _first_text(
-        data.get("nick"),
-        data.get("nickname"),
-        data.get("username"),
-        author.get("username"),
-        author.get("nick"),
-        author.get("nickname"),
-        member.get("nick"),
-        member.get("nickname"),
-        member.get("username"),
-        member_user.get("username"),
-        member_user.get("nick"),
-        user.get("username"),
-        user.get("nick"),
-        user.get("nickname"),
+        data.get("nick"), data.get("nickname"), data.get("username"), author.get("username"),
+        author.get("nick"), author.get("nickname"), member.get("nick"), member.get("nickname"),
+        member.get("username"), member_user.get("username"), member_user.get("nick"),
+        user.get("username"), user.get("nick"), user.get("nickname"),
     )
 
 
@@ -136,20 +117,16 @@ def extract_message_id(payload: dict[str, Any]) -> str:
 
 
 def extract_message_content(payload: dict[str, Any]) -> str:
-    data = _event_data(payload)
-    return str(data.get("content") or "")
+    return str(_event_data(payload).get("content") or "")
 
 
 def has_attachments(payload: dict[str, Any]) -> bool:
     data = _event_data(payload)
-    attachments = data.get("attachments") or data.get("message_attachments") or []
-    return bool(attachments)
+    return bool(data.get("attachments") or data.get("message_attachments") or [])
 
 
 def is_bot_author(payload: dict[str, Any]) -> bool:
-    data = _event_data(payload)
-    author = _dict(data.get("author"))
-    return bool(author.get("bot"))
+    return bool(_dict(_event_data(payload).get("author")).get("bot"))
 
 
 def event_id(payload: dict[str, Any]) -> str:
@@ -173,120 +150,78 @@ class GroupVerificationService:
             )
         )
         self._timeout_task: asyncio.Task[None] | None = None
-        self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        if self._timeout_task and not self._timeout_task.done():
-            return
-        self._stop_event = asyncio.Event()
-        self._timeout_task = asyncio.create_task(self._timeout_loop())
+        if self._timeout_task is None or self._timeout_task.done():
+            self._timeout_task = asyncio.create_task(self._timeout_loop(), name="group-verification-timeouts")
 
     async def stop(self) -> None:
-        self._stop_event.set()
-        if self._timeout_task:
-            self._timeout_task.cancel()
-            try:
-                await self._timeout_task
-            except asyncio.CancelledError:
-                pass
+        task = self._timeout_task
         self._timeout_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _timeout_loop(self) -> None:
-        while not self._stop_event.is_set():
+        while True:
             try:
-                await self.process_expired_sessions()
+                await self.process_timeouts()
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.exception("group verification timeout scan failed")
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=30)
-            except asyncio.TimeoutError:
-                pass
+                logger.exception("group verification timeout sweep failed")
+            await asyncio.sleep(15)
 
     @staticmethod
-    def question_message(question: str) -> str:
-        # 群聊发送 <@openid> 会被客户端原样显示，官方暂不支持真正 @ 渲染。
-        return single_line(f"欢迎加入本群，请先完成验证：{question} 请直接发送数字答案。")
+    def question_message(question: str, challenge_type: str = "math") -> str:
+        hint = "请直接发送数字答案。" if challenge_type == "math" else "请直接发送答案文字。"
+        return single_line(f"欢迎加入本群，请先完成验证：{question} {hint}")
 
     @staticmethod
     def success_message(value: str) -> str:
         return single_line(value)
 
     @staticmethod
-    def deadline(settings: dict[str, Any]) -> str:
-        minutes = max(1, int(settings.get("verification_timeout_minutes", 3)))
-        return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    def _deadline(settings: dict[str, Any]) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=int(settings["timeout_seconds"]))).isoformat()
 
     @staticmethod
-    def mute_expiry(settings: dict[str, Any]) -> str:
-        minutes = max(1, int(settings.get("failure_mute_minutes", 1440)))
-        return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    def _challenge_order(settings: dict[str, Any]) -> list[str]:
+        enabled: list[str] = []
+        if settings.get("math_enabled"):
+            enabled.append("math")
+        if settings.get("custom_question_enabled"):
+            enabled.append("custom")
+        if len(enabled) > 1 and settings.get("combination_mode") == "random_one":
+            return [secrets.choice(enabled)]
+        return enabled
 
     @staticmethod
-    def _success(result: dict[str, Any]) -> bool:
-        return 200 <= int(result.get("status_code", 0)) < 300
-
-    async def _apply_verification_mute(
-        self,
-        session: dict[str, Any],
-        settings: dict[str, Any],
-        *,
-        reason: str,
-        mark_failed: bool,
-    ) -> bool:
-        expire_at = self.mute_expiry(settings)
-        result = await self._mute_coordinator.apply(
-            str(session["bot_id"]),
-            str(session["group_openid"]),
-            str(session["member_openid"]),
-            source="verification",
-            expire_at=expire_at,
-            detail=reason,
-        )
-        success = self._success(result)
-        if success:
-            if mark_failed:
-                self.repository.mark_failed(
-                    str(session["id"]), reason=reason, muted_until=expire_at
-                )
-            else:
-                self.repository.set_pending_mute(str(session["id"]), expire_at)
-        else:
-            self.repository.set_pending_mute(
-                str(session["id"]),
-                None,
-                error=f"QQ官方禁言失败：{result.get('data', '')}",
-            )
-            if mark_failed:
-                self.repository.clear_deadline(
-                    str(session["id"]),
-                    error=f"QQ官方禁言失败，已回退为继续撤回：{result.get('data', '')}",
-                )
-        self.repository.add_log(
-            bot_id=str(session["bot_id"]),
-            session_id=str(session["id"]),
-            action=f"verification_mute:{reason}",
-            success=success,
-            status_code=int(result.get("status_code", 0)) or None,
-            detail=str(result.get("data", "")),
-        )
-        return success
-
-    async def _release_verification_mute(self, session: dict[str, Any]) -> dict[str, Any]:
-        result = await self._mute_coordinator.release(
-            str(session["bot_id"]),
-            str(session["group_openid"]),
-            str(session["member_openid"]),
-            source="verification",
-        )
-        self.repository.add_log(
-            bot_id=str(session["bot_id"]),
-            session_id=str(session["id"]),
-            action="verification_unmute",
-            success=self._success(result),
-            status_code=int(result.get("status_code", 0)) or None,
-            detail=str(result.get("data", "")),
-        )
-        return result
+    def _challenge(settings: dict[str, Any], challenge_type: str) -> dict[str, Any]:
+        if challenge_type == "custom":
+            return {
+                "operand_a": 0,
+                "operand_b": 0,
+                "operator": "",
+                "answer": 0,
+                "question": str(settings["custom_question"]),
+                "challenge_type": "custom",
+                "accepted_answers": list(settings.get("custom_answers") or []),
+            }
+        problem = generate_problem(int(settings["min_operand"]), int(settings["max_operand"]))
+        return {
+            "operand_a": problem.operand_a,
+            "operand_b": problem.operand_b,
+            "operator": problem.operator,
+            "answer": problem.answer,
+            "question": problem.question,
+            "challenge_type": "math",
+            "accepted_answers": [],
+        }
 
     async def _send_question(
         self,
@@ -299,19 +234,52 @@ class GroupVerificationService:
         client = await self._client_provider(bot_id)
         result = await client.send_group_text(
             group_openid,
-            self.question_message(str(session["question"])),
+            self.question_message(str(session["question"]), str(session.get("challenge_type") or "math")),
             event_id=reply_event_id or None,
         )
-        success = int(result.get("status_code", 500)) < 300
         self.repository.add_log(
             bot_id=bot_id,
             session_id=str(session["id"]),
             action="send_question",
-            success=success,
+            success=int(result.get("status_code", 500)) < 300,
             status_code=int(result.get("status_code", 0)) or None,
             detail=str(result.get("data", "")),
         )
         return result
+
+    async def _set_member_mute(self, session: dict[str, Any], op: str, expire_at: str = "") -> bool:
+        if op == "del":
+            result = await self._mute_coordinator.release(
+                str(session["bot_id"]), str(session["group_openid"]),
+                str(session["member_openid"]), source="verification",
+            )
+        else:
+            result = await self._mute_coordinator.apply(
+                str(session["bot_id"]), str(session["group_openid"]),
+                str(session["member_openid"]), source="verification",
+                expire_at=expire_at, detail="入群验证失败",
+            )
+        success = int(result.get("status_code", 500)) < 300
+        self.repository.add_log(
+            bot_id=str(session["bot_id"]), session_id=str(session["id"]),
+            action="verification_unmute" if op == "del" else "verification_failure_mute",
+            success=success, status_code=int(result.get("status_code", 0)) or None,
+            detail=str(result.get("data", "")),
+        )
+        return success
+
+    async def _fail_session(self, session: dict[str, Any], reason: str, settings: dict[str, Any]) -> bool:
+        mute_expire_at = (
+            datetime.now(timezone.utc) + timedelta(minutes=int(settings["failure_mute_minutes"]))
+        ).isoformat()
+        if not self.repository.mark_failed(str(session["id"]), reason=reason, mute_expire_at=mute_expire_at):
+            return False
+        if not await self._set_member_mute(session, "add", mute_expire_at):
+            self.repository.restore_pending_after_mute_error(
+                str(session["id"]), str(session.get("deadline_at") or "") or None,
+            )
+            return False
+        return True
 
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
         settings = self.repository.get_settings(bot_id)
@@ -327,11 +295,8 @@ class GroupVerificationService:
         except Exception as exc:
             logger.exception("group verification event failed: %s", event_type)
             self.repository.add_log(
-                bot_id=bot_id,
-                session_id=None,
-                action=f"event_error:{event_type}",
-                success=False,
-                detail=str(exc),
+                bot_id=bot_id, session_id=None, action=f"event_error:{event_type}",
+                success=False, detail=str(exc),
             )
 
     async def _handle_member_add(self, bot_id: str, payload: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -339,57 +304,35 @@ class GroupVerificationService:
         member_openid = extract_member_openid(payload)
         if not group_openid or not member_openid:
             self.repository.add_log(
-                bot_id=bot_id,
-                session_id=None,
-                action="member_add_missing_identity",
-                success=False,
-                detail="事件中缺少 group_openid 或 member_openid",
+                bot_id=bot_id, session_id=None, action="member_add_missing_identity",
+                success=False, detail="事件中缺少 group_openid 或 member_openid",
             )
             return
-        manual_mode = settings.get("verification_mode") == "manual_mute"
-        problem = (
-            MathProblem(0, 0, "+", 0, "等待管理员审核")
-            if manual_mode
-            else generate_problem(int(settings["min_operand"]), int(settings["max_operand"]))
-        )
+        required = self._challenge_order(settings)
+        if not required:
+            return
+        challenge = self._challenge(settings, required[0])
         session = self.repository.create_or_reset_session(
-            bot_id=bot_id,
-            group_openid=group_openid,
-            member_openid=member_openid,
-            member_name=extract_member_name(payload),
-            operand_a=problem.operand_a,
-            operand_b=problem.operand_b,
-            operator=problem.operator,
-            answer=problem.answer,
-            question=problem.question,
-            joined_at=utc_now(),
-            deadline_at=None if manual_mode else self.deadline(settings),
+            bot_id=bot_id, group_openid=group_openid, member_openid=member_openid,
+            member_name=extract_member_name(payload), required_challenges=required,
+            completed_challenges=[], joined_at=utc_now(), deadline_at=self._deadline(settings),
+            **challenge,
         )
-        if manual_mode:
-            await self._apply_verification_mute(
-                session, settings, reason="manual_review", mark_failed=False
-            )
-            client = await self._client_provider(bot_id)
-            result = await client.send_group_text(
-                group_openid,
-                single_line(str(settings.get("manual_review_message") or "等待管理员审核。")),
-                event_id=event_id(payload) or None,
-            )
-            self.repository.add_log(
-                bot_id=bot_id,
-                session_id=str(session["id"]),
-                action="send_manual_review_notice",
-                success=self._success(result),
-                status_code=int(result.get("status_code", 0)) or None,
-                detail=str(result.get("data", "")),
-            )
-        else:
-            await self._send_question(
-                bot_id=bot_id,
-                group_openid=group_openid,
-                session=session,
-                reply_event_id=event_id(payload),
-            )
+        await self._send_question(
+            bot_id=bot_id, group_openid=group_openid, session=session,
+            reply_event_id=event_id(payload),
+        )
+
+    @staticmethod
+    def _is_correct(content: str, session: dict[str, Any], settings: dict[str, Any]) -> bool:
+        if str(session.get("challenge_type")) == "custom":
+            expected = [single_line(item) for item in session.get("accepted_answers") or []]
+            actual = single_line(content)
+            if settings.get("custom_ignore_case"):
+                expected = [item.casefold() for item in expected]
+                actual = actual.casefold()
+            return bool(actual and actual in expected)
+        return bool(re.fullmatch(r"[+-]?\d+", content)) and int(content) == int(session["answer"])
 
     async def _handle_group_message(
         self,
@@ -406,123 +349,56 @@ class GroupVerificationService:
         session = self.repository.get_pending_session(bot_id, group_openid, member_openid)
         if session is None:
             return
-
         member_name = extract_member_name(payload)
         if member_name and not str(session.get("member_name") or "").strip():
             self.repository.update_member_name(str(session["id"]), member_name)
-
         message_id = extract_message_id(payload)
         if not self.repository.claim_message(bot_id, message_id, "verify_or_retract"):
             return
-
         content = extract_message_content(payload).strip()
-        deadline = parse_time(str(session.get("deadline_at") or ""))
-        timed_out = bool(deadline and deadline <= datetime.now(timezone.utc))
-        correct = (
-            not timed_out
-            and settings.get("verification_mode") != "manual_mute"
-            and not has_attachments(payload)
-            and bool(re.fullmatch(r"[+-]?\d+", content))
-            and int(content) == int(session["answer"])
-        )
+        correct = not has_attachments(payload) and self._is_correct(content, session, settings)
         if correct:
-            release = await self._release_verification_mute(session)
-            if not self._success(release):
-                self.repository.set_pending_mute(
-                    str(session["id"]),
-                    session.get("muted_until"),
-                    error=f"解除验证禁言失败：{release.get('data', '')}",
+            completed = list(session.get("completed_challenges") or [])
+            current = str(session.get("challenge_type") or "math")
+            if current not in completed:
+                completed.append(current)
+            remaining = [item for item in session.get("required_challenges") or [] if item not in completed]
+            if remaining:
+                challenge = self._challenge(settings, remaining[0])
+                updated = self.repository.replace_problem(
+                    str(session["id"]), required_challenges=list(session.get("required_challenges") or []),
+                    completed_challenges=completed, deadline_at=self._deadline(settings),
+                    reset_attempts=False, **challenge,
                 )
+                if updated:
+                    await self._send_question(bot_id=bot_id, group_openid=group_openid, session=updated)
                 return
             self.repository.mark_verified(str(session["id"]))
             client = await self._client_provider(bot_id)
             result = await client.send_group_text(
-                group_openid,
-                self.success_message(str(settings["success_message"])),
-                msg_id=message_id or None,
+                group_openid, self.success_message(str(settings["success_message"])), msg_id=message_id or None,
             )
             self.repository.add_log(
-                bot_id=bot_id,
-                session_id=str(session["id"]),
-                action="verification_passed",
+                bot_id=bot_id, session_id=str(session["id"]), action="verification_passed",
                 success=int(result.get("status_code", 500)) < 300,
-                status_code=int(result.get("status_code", 0)) or None,
-                detail=str(result.get("data", "")),
+                status_code=int(result.get("status_code", 0)) or None, detail=str(result.get("data", "")),
             )
             return
 
-        if not message_id:
-            updated = self.repository.record_wrong_message(
-                str(session["id"]),
-                retracted=False,
-                status_code=None,
-                detail="事件缺少 message_id，无法撤回",
-            )
-            if updated is None:
-                return
-            if timed_out:
-                await self._handle_verification_failure(updated, settings, reason="timeout")
-            elif int(updated.get("wrong_attempts", 0)) >= max(
-                1, int(settings.get("max_wrong_attempts", 3))
-            ):
-                await self._handle_verification_failure(
-                    updated, settings, reason="too_many_errors"
-                )
-            return
-        client = await self._client_provider(bot_id)
-        result = await client.retract_group_message(group_openid, message_id)
-        status_code = int(result.get("status_code", 0)) or None
-        success = status_code is not None and 200 <= status_code < 300
+        retracted = False
+        status_code: int | None = None
+        detail = "事件缺少 message_id，无法撤回"
+        if message_id:
+            client = await self._client_provider(bot_id)
+            result = await client.retract_group_message(group_openid, message_id)
+            status_code = int(result.get("status_code", 0)) or None
+            retracted = status_code is not None and 200 <= status_code < 300
+            detail = str(result.get("data", ""))
         updated = self.repository.record_wrong_message(
-            str(session["id"]),
-            retracted=success,
-            status_code=status_code,
-            detail=str(result.get("data", "")),
+            str(session["id"]), retracted=retracted, status_code=status_code, detail=detail,
         )
-        if updated is None:
-            return
-        if timed_out:
-            await self._handle_verification_failure(updated, settings, reason="timeout")
-            return
-        max_attempts = max(1, int(settings.get("max_wrong_attempts", 3)))
-        if int(updated.get("wrong_attempts", 0)) >= max_attempts:
-            await self._handle_verification_failure(updated, settings, reason="too_many_errors")
-
-    async def _handle_verification_failure(
-        self,
-        session: dict[str, Any],
-        settings: dict[str, Any],
-        *,
-        reason: str,
-    ) -> None:
-        if settings.get("failure_action", "mute") == "mute":
-            await self._apply_verification_mute(
-                session, settings, reason=reason, mark_failed=True
-            )
-            return
-        self.repository.clear_deadline(
-            str(session["id"]),
-            error="已达到验证限制，继续保持待验证并撤回非正确答案消息。",
-        )
-        self.repository.add_log(
-            bot_id=str(session["bot_id"]),
-            session_id=str(session["id"]),
-            action=f"verification_limit:{reason}",
-            success=True,
-            detail="兼容模式：不禁言，继续撤回",
-        )
-
-    async def process_expired_sessions(self) -> int:
-        sessions = self.repository.list_expired_pending(utc_now())
-        processed = 0
-        for session in sessions:
-            settings = self.repository.get_settings(str(session["bot_id"]))
-            if not settings.get("enabled") or settings.get("verification_mode") != "math":
-                self.repository.clear_deadline(str(session["id"]))
-                continue
-            await self._handle_verification_failure(session, settings, reason="timeout")
-            processed += 1
-        return processed
+        if updated and int(updated["wrong_attempts"]) >= int(settings["max_wrong_attempts"]):
+            await self._fail_session(updated, "wrong_attempt_limit", settings)
 
     def _handle_member_remove(self, bot_id: str, payload: dict[str, Any]) -> None:
         group_openid = extract_group_openid(payload)
@@ -533,86 +409,65 @@ class GroupVerificationService:
                 bot_id, group_openid, member_openid, "verification"
             )
 
+    async def process_timeouts(self) -> int:
+        processed = 0
+        for session in self.repository.list_expired_pending():
+            settings = self.repository.get_settings(str(session["bot_id"]))
+            if await self._fail_session(session, "timeout", settings):
+                processed += 1
+        return processed
+
     async def reset_session(self, session_id: str) -> dict[str, Any]:
         session = self.repository.get_session(session_id)
         if session is None:
             raise KeyError("验证记录不存在")
         settings = self.repository.get_settings(str(session["bot_id"]))
-        release = await self._release_verification_mute(session)
-        if not self._success(release):
-            raise RuntimeError(f"解除验证禁言失败：{release.get('data', '')}")
-        manual_mode = settings.get("verification_mode") == "manual_mute"
-        problem = (
-            MathProblem(0, 0, "+", 0, "等待管理员审核")
-            if manual_mode
-            else generate_problem(int(settings["min_operand"]), int(settings["max_operand"]))
-        )
+        required = self._challenge_order(settings)
+        if not required:
+            raise ValueError("请至少启用一种验证方式")
+        if not await self._set_member_mute(session, "del"):
+            raise RuntimeError("QQ 官方解除禁言失败，未重新出题")
+        challenge = self._challenge(settings, required[0])
         updated = self.repository.replace_problem(
-            session_id,
-            operand_a=problem.operand_a,
-            operand_b=problem.operand_b,
-            operator=problem.operator,
-            answer=problem.answer,
-            question=problem.question,
-            deadline_at=None if manual_mode else self.deadline(settings),
+            session_id, required_challenges=required, completed_challenges=[],
+            deadline_at=self._deadline(settings), reset_attempts=True, **challenge,
         )
         if updated is None:
             raise KeyError("验证记录不存在")
-        if manual_mode:
-            await self._apply_verification_mute(
-                updated, settings, reason="manual_review", mark_failed=False
-            )
-            client = await self._client_provider(str(updated["bot_id"]))
-            await client.send_group_text(
-                str(updated["group_openid"]),
-                single_line(str(settings.get("manual_review_message") or "等待管理员审核。")),
-            )
-        else:
-            await self._send_question(
-                bot_id=str(updated["bot_id"]),
-                group_openid=str(updated["group_openid"]),
-                session=updated,
-            )
+        await self._send_question(
+            bot_id=str(updated["bot_id"]), group_openid=str(updated["group_openid"]), session=updated,
+        )
         return updated
 
     async def verify_session(self, session_id: str) -> dict[str, Any]:
         session = self.repository.get_session(session_id)
         if session is None:
             raise KeyError("验证记录不存在")
-        release = await self._release_verification_mute(session)
-        if not self._success(release):
-            raise RuntimeError(f"解除验证禁言失败：{release.get('data', '')}")
+        if not await self._set_member_mute(session, "del"):
+            raise RuntimeError("QQ 官方解除禁言失败，未标记通过")
         self.repository.mark_verified(session_id)
-        updated = self.repository.get_session(session_id)
-        client = await self._client_provider(str(session["bot_id"]))
         settings = self.repository.get_settings(str(session["bot_id"]))
+        client = await self._client_provider(str(session["bot_id"]))
         result = await client.send_group_text(
-            str(session["group_openid"]),
-            self.success_message(str(settings["success_message"])),
+            str(session["group_openid"]), self.success_message(str(settings["success_message"])),
         )
         self.repository.add_log(
-            bot_id=str(session["bot_id"]),
-            session_id=session_id,
-            action="manual_verify",
+            bot_id=str(session["bot_id"]), session_id=session_id, action="manual_verify",
             success=int(result.get("status_code", 500)) < 300,
-            status_code=int(result.get("status_code", 0)) or None,
-            detail=str(result.get("data", "")),
+            status_code=int(result.get("status_code", 0)) or None, detail=str(result.get("data", "")),
         )
-        return updated or session
+        return self.repository.get_session(session_id) or session
 
     async def close_session(self, session_id: str) -> dict[str, Any]:
         session = self.repository.get_session(session_id)
         if session is None:
             raise KeyError("验证记录不存在")
-        release = await self._release_verification_mute(session)
-        if not self._success(release):
-            raise RuntimeError(f"解除验证禁言失败：{release.get('data', '')}")
+        if not await self._set_member_mute(session, "del"):
+            raise RuntimeError("QQ 官方解除验证来源禁言失败，未结束验证")
         self.repository.close_session(session_id)
         self.repository.add_log(
-            bot_id=str(session["bot_id"]),
-            session_id=session_id,
-            action="manual_close",
-            success=True,
+            bot_id=str(session["bot_id"]), session_id=session_id,
+            action="manual_close", success=True,
             detail="结束验证并释放验证来源禁言",
         )
         return self.repository.get_session(session_id) or session

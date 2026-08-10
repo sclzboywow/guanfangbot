@@ -14,7 +14,7 @@ from app.services.group_mute_repository import (
     group_mute_lease_repository,
     parse_time,
 )
-from app.services.group_verification_service import extract_group_openid
+from app.services.group_verification_service import extract_group_number, extract_group_openid
 from app.services.qqbot_client import QQBotClient, client_manager
 
 
@@ -116,12 +116,25 @@ class GroupManagementService:
         group_openid = extract_group_openid(payload)
         if group_openid:
             event_data = _data(payload)
-            self.repository.remember_group(
+            is_new_group = self.repository.remember_group(
                 bot_id,
                 group_openid,
+                group_id=extract_group_number(payload),
                 group_name=str(event_data.get("group_name") or ""),
+                group_finger_memo=str(event_data.get("group_finger_memo") or ""),
+                group_class_text=str(event_data.get("group_class_text") or ""),
+                group_tags=event_data.get("group_tags") if isinstance(event_data.get("group_tags"), list) else None,
+                group_member_num=event_data.get("group_member_num") if isinstance(event_data.get("group_member_num"), int) else None,
                 source=f"event:{event_type}",
             )
+            if is_new_group:
+                try:
+                    await self.refresh_group_info(bot_id, group_openid)
+                except HTTPException as exc:
+                    self.repository.remember_group(
+                        bot_id, group_openid, group_id=extract_group_number(payload),
+                        source=f"event:{event_type}", info_sync_error=str(exc.detail),
+                    )
         if event_type != "GROUP_JOIN_REQUEST":
             return
         event_data = dict(_data(payload))
@@ -185,6 +198,8 @@ class GroupManagementService:
         reject_reason: str = "",
         add_to_member_blacklist: bool = False,
     ) -> dict[str, Any]:
+        if not self.repository.get_settings(bot_id)["manual_approval_enabled"]:
+            raise HTTPException(status_code=409, detail="人工审批开关已关闭")
         body: dict[str, Any] = {"op": op, "join_request_id": join_request_id}
         if op == "decline":
             if reject_reason:
@@ -308,6 +323,8 @@ class GroupManagementService:
         expire_at: str | None,
         remark: str,
     ) -> dict[str, Any]:
+        if not self.repository.get_settings(bot_id)["auto_approval_enabled"]:
+            raise HTTPException(status_code=409, detail="白名单自动审批开关已关闭")
         body = {
             **self._group_body(group_mode, groups),
             "is_enable": is_enable,
@@ -324,6 +341,8 @@ class GroupManagementService:
         return data if isinstance(data, dict) else {}
 
     async def update_strategy(self, bot_id: str, strategy_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if body.get("is_enable") == "on" and not self.repository.get_settings(bot_id)["auto_approval_enabled"]:
+            raise HTTPException(status_code=409, detail="白名单自动审批开关已关闭")
         data = await self._request(
             bot_id,
             "PATCH",
@@ -333,6 +352,19 @@ class GroupManagementService:
             strategy_id=strategy_id,
         )
         return data if isinstance(data, dict) else {}
+
+    async def disable_enabled_strategies(self, bot_id: str) -> int:
+        data = await self.list_strategies(bot_id)
+        disabled = 0
+        for strategy in data["strategies"]:
+            if strategy.get("is_enable") != "on":
+                continue
+            strategy_id = str(strategy.get("strategy_id") or "").strip()
+            if not strategy_id:
+                continue
+            await self.update_strategy(bot_id, strategy_id, {"is_enable": "off"})
+            disabled += 1
+        return disabled
 
     async def delete_strategy(self, bot_id: str, strategy_id: str) -> dict[str, Any]:
         await self._request(
@@ -345,6 +377,8 @@ class GroupManagementService:
         return {"ok": True}
 
     async def execute_strategy(self, bot_id: str, strategy_id: str) -> dict[str, Any]:
+        if not self.repository.get_settings(bot_id)["auto_approval_enabled"]:
+            raise HTTPException(status_code=409, detail="白名单自动审批开关已关闭")
         await self._request(
             bot_id,
             "POST",
@@ -365,6 +399,8 @@ class GroupManagementService:
         op: str,
         users: list[str],
     ) -> dict[str, Any]:
+        if not self.repository.get_settings(bot_id)["auto_approval_enabled"]:
+            raise HTTPException(status_code=409, detail="白名单自动审批开关已关闭")
         last: dict[str, Any] = {}
         for start in range(0, len(users), 10000):
             batch = users[start : start + 10000]
@@ -392,8 +428,14 @@ class GroupManagementService:
         self.repository.remember_group(
             bot_id,
             group_openid,
+            group_id=str(info.get("group_id") or ""),
             group_name=str(info.get("group_name") or ""),
+            group_finger_memo=str(info.get("group_finger_memo") or ""),
+            group_class_text=str(info.get("group_class_text") or ""),
+            group_tags=info.get("group_tags") if isinstance(info.get("group_tags"), list) else None,
+            group_member_num=info.get("group_member_num") if isinstance(info.get("group_member_num"), int) else None,
             source="group_info_api",
+            info_synced=True,
         )
         return info
 
