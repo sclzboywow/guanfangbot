@@ -238,6 +238,18 @@ class GroupManagementRepository:
             result.append(item)
         return result
 
+    def list_group_targets(self) -> list[tuple[str, str]]:
+        """All remembered (bot_id, group_openid) pairs, most recently seen first."""
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT bot_id, group_openid
+                FROM managed_groups
+                ORDER BY last_seen_at DESC
+                """
+            ).fetchall()
+        return [(str(row["bot_id"]), str(row["group_openid"])) for row in rows]
+
     def get_settings(self, bot_id: str) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             row = connection.execute(

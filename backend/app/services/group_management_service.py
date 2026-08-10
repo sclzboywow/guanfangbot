@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
@@ -19,6 +22,9 @@ from app.services.qqbot_client import QQBotClient, client_manager
 
 
 REQUIRED_EVENTS = ("GROUP_JOIN_REQUEST",)
+JOIN_REQUEST_POLL_INTERVAL_SECONDS = 60
+JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = 2.5
+logger = logging.getLogger(__name__)
 
 
 def _data(payload: dict[str, Any]) -> dict[str, Any]:
@@ -39,6 +45,30 @@ def _error_code(data: Any) -> int | None:
     return None
 
 
+def _is_not_group_admin(exc: Exception | dict[str, Any] | None = None, *, result: dict[str, Any] | None = None) -> bool:
+    """Official QQ returns code 11703 / 'not group admin' when the bot lacks admin rights."""
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            if detail.get("qq_code") == 11703:
+                return True
+            data = detail.get("qq_data")
+            if isinstance(data, dict) and _error_code(data) == 11703:
+                return True
+            message = str(detail.get("message") or "")
+            if "not group admin" in message or "不是群管理员" in message or "无该群管理" in message:
+                return True
+        return "not group admin" in str(detail)
+    payload = result if isinstance(result, dict) else None
+    if payload is not None:
+        data = payload.get("data") if "data" in payload else payload
+        if _error_code(data) == 11703:
+            return True
+        text = str(data or "")
+        return "not group admin" in text
+    return False
+
+
 def _friendly_error(action: str, result: dict[str, Any]) -> HTTPException:
     status_code = int(result.get("status_code", 500))
     data = result.get("data")
@@ -49,6 +79,9 @@ def _friendly_error(action: str, result: dict[str, Any]) -> HTTPException:
     elif code == 12905:
         message = "该自动审批策略尚未启用，请先启用策略再执行扫描。"
         public_status = 409
+    elif code == 11703 or _is_not_group_admin(result=result):
+        message = "当前机器人不是该群管理员，已跳过此群。"
+        public_status = 403
     elif code == 11253:
         message = "当前机器人没有该接口权限；群名称可能无法读取，但不影响使用群 OpenID 管理。"
         public_status = 403
@@ -80,6 +113,40 @@ class GroupManagementService:
             if repository is group_management_repository and client_provider is None
             else GroupMuteLeaseRepository(repository.path.with_name("group_mute_leases.db"))
         )
+        self._poll_task: asyncio.Task[None] | None = None
+        self.last_join_request_poll_at: str | None = None
+        self.last_join_request_poll_summary: dict[str, Any] = {}
+
+    async def start(self) -> None:
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(
+                self._join_request_poll_loop(),
+                name="group-join-request-poll",
+            )
+
+    async def stop(self) -> None:
+        task = self._poll_task
+        self._poll_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _join_request_poll_loop(self) -> None:
+        # Stagger the first sweep slightly so startup API traffic settles first.
+        await asyncio.sleep(8)
+        while True:
+            try:
+                self.last_join_request_poll_summary = await self.poll_all_join_requests()
+                self.last_join_request_poll_at = datetime.now(timezone.utc).isoformat()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("group join-request poll sweep failed")
+            await asyncio.sleep(JOIN_REQUEST_POLL_INTERVAL_SECONDS)
 
     async def _request(
         self,
@@ -93,21 +160,23 @@ class GroupManagementService:
         group_openid: str = "",
         member_openid: str = "",
         strategy_id: str = "",
+        record_log: bool = True,
     ) -> Any:
         client = await self._client_provider(bot_id)
         result = await client.request(method, path, query, body)
         status_code = int(result.get("status_code", 500))
         success = status_code < 300
-        self.repository.add_log(
-            bot_id=bot_id,
-            action=action,
-            success=success,
-            group_openid=group_openid,
-            member_openid=member_openid,
-            strategy_id=strategy_id,
-            status_code=status_code,
-            detail=str(result.get("data", "")),
-        )
+        if record_log:
+            self.repository.add_log(
+                bot_id=bot_id,
+                action=action,
+                success=success,
+                group_openid=group_openid,
+                member_openid=member_openid,
+                strategy_id=strategy_id,
+                status_code=status_code,
+                detail=str(result.get("data", "")),
+            )
         if not success:
             raise _friendly_error(action, result)
         return result.get("data")
@@ -184,11 +253,18 @@ class GroupManagementService:
                 )
         return {"refreshed": refreshed, "failed": failed, "checked": refreshed + failed}
 
-    async def sync_join_requests(self, bot_id: str, group_openid: str) -> dict[str, Any]:
+    async def sync_join_requests(
+        self,
+        bot_id: str,
+        group_openid: str,
+        *,
+        record_logs: bool = True,
+        source: str = "manual_sync",
+    ) -> dict[str, Any]:
         group_openid = str(group_openid or "").strip()
         if not group_openid:
             raise HTTPException(status_code=422, detail="请先选择或填写群 OpenID")
-        self.repository.remember_group(bot_id, group_openid, source="manual_sync")
+        self.repository.remember_group(bot_id, group_openid, source=source)
         cursor = ""
         synced = 0
         pages = 0
@@ -200,6 +276,7 @@ class GroupManagementService:
                 query={"limit": "100", **({"cursor": cursor} if cursor else {})},
                 action="sync_join_requests",
                 group_openid=group_openid,
+                record_log=record_logs,
             )
             page = data if isinstance(data, dict) else {}
             items = page.get("list") if isinstance(page.get("list"), list) else []
@@ -208,7 +285,7 @@ class GroupManagementService:
                     continue
                 normalized = dict(item)
                 normalized["group_openid"] = group_openid
-                if self.repository.upsert_join_request(bot_id, normalized, source="api_sync"):
+                if self.repository.upsert_join_request(bot_id, normalized, source=source):
                     synced += 1
             pages += 1
             next_cursor = str(page.get("next_cursor") or "").strip()
@@ -217,6 +294,73 @@ class GroupManagementService:
                 break
             cursor = next_cursor
         return {"synced": synced, "pages": pages, "truncated": bool(cursor)}
+
+    async def poll_all_join_requests(self) -> dict[str, Any]:
+        """Pull official join-request lists for every remembered group.
+
+        Official events can be missed while the process is down; this sweep
+        keeps the admin queue warm without exceeding the 30 QPM list limit.
+        Groups where the bot is not an admin are skipped quietly.
+        """
+        targets = self.repository.list_group_targets()
+        groups = 0
+        synced = 0
+        failed = 0
+        skipped_not_admin = 0
+        for index, (bot_id, group_openid) in enumerate(targets):
+            try:
+                result = await self.sync_join_requests(
+                    bot_id,
+                    group_openid,
+                    record_logs=False,
+                    source="scheduled_poll",
+                )
+                groups += 1
+                synced += int(result.get("synced") or 0)
+            except HTTPException as exc:
+                if _is_not_group_admin(exc):
+                    skipped_not_admin += 1
+                    logger.info(
+                        "skip join-request poll: bot is not group admin bot=%s group=%s",
+                        bot_id,
+                        group_openid,
+                    )
+                else:
+                    failed += 1
+                    logger.warning(
+                        "scheduled join-request sync failed bot=%s group=%s detail=%s",
+                        bot_id,
+                        group_openid,
+                        exc.detail,
+                    )
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "scheduled join-request sync failed bot=%s group=%s",
+                    bot_id,
+                    group_openid,
+                )
+            if index + 1 < len(targets):
+                await asyncio.sleep(JOIN_REQUEST_POLL_GROUP_GAP_SECONDS)
+        if targets:
+            # One compact breadcrumb per sweep instead of a log row for every page.
+            self.repository.add_log(
+                bot_id=targets[0][0],
+                action="scheduled_join_request_poll",
+                success=failed == 0,
+                detail=(
+                    f"groups={groups} synced={synced} failed={failed} "
+                    f"skipped_not_admin={skipped_not_admin} targets={len(targets)}"
+                ),
+            )
+        return {
+            "targets": len(targets),
+            "groups": groups,
+            "synced": synced,
+            "failed": failed,
+            "skipped_not_admin": skipped_not_admin,
+            "interval_seconds": JOIN_REQUEST_POLL_INTERVAL_SECONDS,
+        }
 
     async def decide_join_request(
         self,

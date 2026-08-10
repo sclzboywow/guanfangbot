@@ -220,6 +220,11 @@ export interface GroupManagementStatus {
     detail: string
     created_at: string
   }>
+  poll?: {
+    interval_seconds: number
+    last_polled_at?: string | null
+    last_summary?: Record<string, unknown>
+  }
   limits: Record<string, number>
 }
 

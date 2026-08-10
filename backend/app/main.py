@@ -21,9 +21,9 @@ from app.routers import (
 from app.services.ai_reply_service import ai_reply_service
 from app.services.auth_deps import get_optional_user
 from app.services.bootstrap import bootstrap_auth_and_ownership
+from app.services.group_management_service import group_management_service
 from app.services.group_verification_service import group_verification_service
 from app.services.log_retention import install_log_retention
-from app.services.group_verification_service import group_verification_service
 
 settings = get_settings()
 
@@ -62,9 +62,11 @@ async def lifespan(_: FastAPI):
     bootstrap_auth_and_ownership()
     await ai_reply_service.start()
     await group_verification_service.start()
+    await group_management_service.start()
     try:
         yield
     finally:
+        await group_management_service.stop()
         await group_verification_service.stop()
         await ai_reply_service.stop()
 
