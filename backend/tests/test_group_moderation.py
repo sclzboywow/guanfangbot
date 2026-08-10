@@ -2,7 +2,85 @@ import asyncio
 from pathlib import Path
 
 from app.services.group_moderation_repository import GroupModerationRepository
-from app.services.group_moderation_service import GroupModerationService, detect_advertising
+from app.services.group_moderation_service import (
+    GroupModerationService,
+    detect_advertising,
+    is_group_card,
+    is_merged_message,
+)
+
+
+def merged_message_payload(*, message_id: str, member_role: str = "member") -> dict:
+    return {
+        "d": {
+            "group_openid": "group-1",
+            "id": message_id,
+            "message_type": 102,
+            "content": (
+                "[群聊的聊天记录]\n=== 消息 1 ===\n"
+                "[消息内容] 测试合并消息\n[发送者] 测试用户\n"
+            ),
+            "author": {
+                "member_openid": "member-1",
+                "username": "普通成员",
+                "member_role": member_role,
+            },
+        }
+    }
+
+
+def group_card_payload(*, message_id: str, member_role: str = "member") -> dict:
+    return {
+        "d": {
+            "group_openid": "group-1",
+            "id": message_id,
+            "message_type": 3,
+            "content": (
+                "[卡片消息] 好友名片\n摘要: 群名片: 建筑工程行业图集规范\n"
+                "type: contact\ntag: 群名片\n"
+                "jumpUrl: mqqapi://card/show_pslcard?card_type=group&uin=808238349\n"
+                "nickname: 建筑工程行业图集规范\n"
+            ),
+            "ark_data": {
+                "prompt": "群名片: 建筑工程行业图集规范",
+                "ark_type": "contact_card",
+                "ark_name": "好友名片",
+                "fields": {
+                    "tag": "群名片",
+                    "type": "contact",
+                    "nickname": "建筑工程行业图集规范",
+                    "jumpUrl": "mqqapi://card/show_pslcard?card_type=group&uin=808238349",
+                },
+            },
+            "author": {
+                "member_openid": "member-1",
+                "username": "普通成员",
+                "member_role": member_role,
+            },
+        }
+    }
+
+
+def friend_card_payload(*, message_id: str) -> dict:
+    return {
+        "d": {
+            "group_openid": "group-1",
+            "id": message_id,
+            "message_type": 3,
+            "content": "[卡片消息] 好友名片\n摘要: [机器人名片] 红后\ntag: 好友名片\n",
+            "ark_data": {
+                "prompt": "好友名片",
+                "ark_type": "contact_card",
+                "ark_name": "好友名片",
+                "fields": {"tag": "好友名片", "nickname": "红后"},
+            },
+            "author": {
+                "member_openid": "member-1",
+                "username": "普通成员",
+                "member_role": "member",
+            },
+        }
+    }
 
 
 class FakeClient:
@@ -147,3 +225,83 @@ def test_admin_exemption_and_manual_controls(tmp_path: Path) -> None:
     repository.release_member(str(member["id"]), reset_strikes=True)
     reset = repository.get_member_by_id(str(member["id"]))
     assert reset["strike_count"] == 0
+
+
+def test_merged_message_detection(tmp_path: Path) -> None:
+    assert is_merged_message(merged_message_payload(message_id="m1"))
+    assert not is_merged_message(message_payload("普通聊天", message_id="m2"))
+
+
+def test_retract_merged_message_when_enabled(tmp_path: Path) -> None:
+    repository = GroupModerationRepository(tmp_path / "moderation.db")
+    enabled_settings(repository, retract_merged_messages=True)
+    client = FakeClient()
+
+    async def provider(_bot_id: str):
+        return client
+
+    service = GroupModerationService(repository, provider)
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", merged_message_payload(message_id="merge-1")))
+
+    member = repository.get_member("bot-1", "group-1", "member-1")
+    assert member is not None
+    assert member["strike_count"] == 0
+    assert len(client.retracted) == 1
+    assert client.sent == []
+    logs = repository.list_logs("bot-1")
+    assert logs[0]["rule"] == "merged_message"
+    assert logs[0]["action"] == "retract_merged"
+
+
+def test_merged_message_ignored_when_disabled(tmp_path: Path) -> None:
+    repository = GroupModerationRepository(tmp_path / "moderation.db")
+    enabled_settings(repository, retract_merged_messages=False)
+    client = FakeClient()
+
+    async def provider(_bot_id: str):
+        return client
+
+    service = GroupModerationService(repository, provider)
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", merged_message_payload(message_id="merge-2")))
+    assert client.retracted == []
+
+
+def test_group_card_detection() -> None:
+    assert is_group_card(group_card_payload(message_id="g1"))
+    assert not is_group_card(friend_card_payload(message_id="f1"))
+    assert not is_group_card(message_payload("普通聊天", message_id="t1"))
+
+
+def test_retract_group_card_when_enabled(tmp_path: Path) -> None:
+    repository = GroupModerationRepository(tmp_path / "moderation.db")
+    enabled_settings(repository, retract_group_cards=True)
+    client = FakeClient()
+
+    async def provider(_bot_id: str):
+        return client
+
+    service = GroupModerationService(repository, provider)
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", group_card_payload(message_id="card-1")))
+
+    member = repository.get_member("bot-1", "group-1", "member-1")
+    assert member is not None
+    assert member["strike_count"] == 0
+    assert len(client.retracted) == 1
+    assert client.sent == []
+    logs = repository.list_logs("bot-1")
+    assert logs[0]["rule"] == "group_card"
+    assert logs[0]["action"] == "retract_group_card"
+    assert "建筑工程" in logs[0]["matched"]
+
+
+def test_group_card_ignored_when_disabled(tmp_path: Path) -> None:
+    repository = GroupModerationRepository(tmp_path / "moderation.db")
+    enabled_settings(repository, retract_group_cards=False)
+    client = FakeClient()
+
+    async def provider(_bot_id: str):
+        return client
+
+    service = GroupModerationService(repository, provider)
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", group_card_payload(message_id="card-2")))
+    assert client.retracted == []

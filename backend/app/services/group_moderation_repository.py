@@ -121,6 +121,18 @@ class GroupModerationRepository:
                 CREATE INDEX IF NOT EXISTS idx_moderation_logs_bot ON moderation_logs(bot_id, created_at DESC);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(moderation_settings)").fetchall()
+            }
+            if "retract_merged_messages" not in columns:
+                connection.execute(
+                    "ALTER TABLE moderation_settings ADD COLUMN retract_merged_messages INTEGER NOT NULL DEFAULT 0"
+                )
+            if "retract_group_cards" not in columns:
+                connection.execute(
+                    "ALTER TABLE moderation_settings ADD COLUMN retract_group_cards INTEGER NOT NULL DEFAULT 0"
+                )
 
     @staticmethod
     def _settings_dict(row: sqlite3.Row | None, bot_id: str) -> dict[str, Any]:
@@ -134,6 +146,8 @@ class GroupModerationRepository:
                 "detect_content_keywords": True,
                 "detect_nickname_keywords": True,
                 "exempt_admins": True,
+                "retract_merged_messages": False,
+                "retract_group_cards": False,
                 "penalty_minutes": list(DEFAULT_PENALTY_MINUTES),
                 "permanent_after": 5,
                 "escalation_cooldown_seconds": 60,
@@ -146,8 +160,9 @@ class GroupModerationRepository:
         for key in (
             "enabled", "detect_mobile", "detect_landline", "detect_wechat",
             "detect_content_keywords", "detect_nickname_keywords", "exempt_admins",
+            "retract_merged_messages", "retract_group_cards",
         ):
-            data[key] = bool(data[key])
+            data[key] = bool(data.get(key, 0))
         data["penalty_minutes"] = [int(v) for v in _json_list(data.get("penalty_minutes"), DEFAULT_PENALTY_MINUTES)]
         data["content_keywords"] = [str(v) for v in _json_list(data.get("content_keywords"), DEFAULT_CONTENT_KEYWORDS)]
         data["nickname_keywords"] = [str(v) for v in _json_list(data.get("nickname_keywords"), DEFAULT_NICKNAME_KEYWORDS)]
@@ -168,9 +183,10 @@ class GroupModerationRepository:
                 INSERT INTO moderation_settings (
                     bot_id, enabled, detect_mobile, detect_landline, detect_wechat,
                     detect_content_keywords, detect_nickname_keywords, exempt_admins,
-                    penalty_minutes, permanent_after, escalation_cooldown_seconds,
-                    warning_cooldown_seconds, content_keywords, nickname_keywords, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    retract_merged_messages, retract_group_cards, penalty_minutes, permanent_after,
+                    escalation_cooldown_seconds, warning_cooldown_seconds, content_keywords,
+                    nickname_keywords, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     enabled = excluded.enabled,
                     detect_mobile = excluded.detect_mobile,
@@ -179,6 +195,8 @@ class GroupModerationRepository:
                     detect_content_keywords = excluded.detect_content_keywords,
                     detect_nickname_keywords = excluded.detect_nickname_keywords,
                     exempt_admins = excluded.exempt_admins,
+                    retract_merged_messages = excluded.retract_merged_messages,
+                    retract_group_cards = excluded.retract_group_cards,
                     penalty_minutes = excluded.penalty_minutes,
                     permanent_after = excluded.permanent_after,
                     escalation_cooldown_seconds = excluded.escalation_cooldown_seconds,
@@ -191,7 +209,9 @@ class GroupModerationRepository:
                     bot_id, int(bool(current["enabled"])), int(bool(current["detect_mobile"])),
                     int(bool(current["detect_landline"])), int(bool(current["detect_wechat"])),
                     int(bool(current["detect_content_keywords"])), int(bool(current["detect_nickname_keywords"])),
-                    int(bool(current["exempt_admins"])), json.dumps(current["penalty_minutes"], ensure_ascii=False),
+                    int(bool(current["exempt_admins"])), int(bool(current["retract_merged_messages"])),
+                    int(bool(current["retract_group_cards"])),
+                    json.dumps(current["penalty_minutes"], ensure_ascii=False),
                     int(current["permanent_after"]), int(current["escalation_cooldown_seconds"]),
                     int(current["warning_cooldown_seconds"]), json.dumps(current["content_keywords"], ensure_ascii=False),
                     json.dumps(current["nickname_keywords"], ensure_ascii=False), current["updated_at"],

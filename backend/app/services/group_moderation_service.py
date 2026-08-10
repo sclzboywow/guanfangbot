@@ -28,6 +28,60 @@ WECHAT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ADMIN_ROLES = {"admin", "owner", "群主", "管理员", "2", "4"}
+MERGED_MESSAGE_TYPE = 102
+MERGED_MESSAGE_PREFIX = "[群聊的聊天记录]"
+CARD_MESSAGE_TYPE = 3
+GROUP_CARD_TAG = "群名片"
+
+
+def extract_message_type(payload: dict[str, Any]) -> int | None:
+    data = payload.get("d") if isinstance(payload.get("d"), dict) else payload
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("message_type")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_ark_data(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("d") if isinstance(payload.get("d"), dict) else payload
+    if not isinstance(data, dict):
+        return {}
+    ark = data.get("ark_data")
+    return ark if isinstance(ark, dict) else {}
+
+
+def is_merged_message(payload: dict[str, Any]) -> bool:
+    if extract_message_type(payload) == MERGED_MESSAGE_TYPE:
+        return True
+    content = extract_message_content(payload).lstrip()
+    return content.startswith(MERGED_MESSAGE_PREFIX)
+
+
+def is_group_card(payload: dict[str, Any]) -> bool:
+    """群名片：结构化 contact_card 且 tag/jumpUrl 指向群，或 content 展平文本含群名片标记。"""
+    ark = extract_ark_data(payload)
+    fields = ark.get("fields") if isinstance(ark.get("fields"), dict) else {}
+    tag = str(fields.get("tag") or "").strip()
+    jump_url = str(fields.get("jumpUrl") or fields.get("jump_url") or "")
+    prompt = str(ark.get("prompt") or "")
+    if tag == GROUP_CARD_TAG or "card_type=group" in jump_url or prompt.startswith(f"{GROUP_CARD_TAG}:"):
+        return True
+
+    content = extract_message_content(payload)
+    if not content:
+        return False
+    lowered = content.replace(" ", "")
+    return (
+        "tag:群名片" in lowered
+        or "摘要:群名片" in lowered
+        or "群名片:" in content
+        or "card_type=group" in content
+    )
 
 
 def utc_now_dt() -> datetime:
@@ -152,6 +206,40 @@ class GroupModerationService:
             return
         now = utc_now_dt()
         content = extract_message_content(payload)
+
+        if settings.get("retract_merged_messages") and is_merged_message(payload):
+            client = await self._client_provider(bot_id)
+            result = await client.retract_group_message(group_openid, message_id)
+            status_code = int(result.get("status_code", 0)) or None
+            success = status_code is not None and 200 <= status_code < 300
+            detail = str(result.get("data", ""))
+            self.repository.record_retraction(str(member["id"]), success=success, status_code=status_code, detail=detail, now=now.isoformat())
+            self.repository.add_log(
+                bot_id=bot_id, member_id=str(member["id"]), group_openid=group_openid,
+                member_openid=member_openid, action="retract_merged", rule="merged_message",
+                matched="message_type=102", message_excerpt=single_line(content),
+                success=success, status_code=status_code, detail=detail,
+            )
+            return
+
+        if settings.get("retract_group_cards") and is_group_card(payload):
+            client = await self._client_provider(bot_id)
+            result = await client.retract_group_message(group_openid, message_id)
+            status_code = int(result.get("status_code", 0)) or None
+            success = status_code is not None and 200 <= status_code < 300
+            detail = str(result.get("data", ""))
+            ark = extract_ark_data(payload)
+            fields = ark.get("fields") if isinstance(ark.get("fields"), dict) else {}
+            matched = str(fields.get("nickname") or ark.get("prompt") or "group_card")
+            self.repository.record_retraction(str(member["id"]), success=success, status_code=status_code, detail=detail, now=now.isoformat())
+            self.repository.add_log(
+                bot_id=bot_id, member_id=str(member["id"]), group_openid=group_openid,
+                member_openid=member_openid, action="retract_group_card", rule="group_card",
+                matched=matched, message_excerpt=single_line(content),
+                success=success, status_code=status_code, detail=detail,
+            )
+            return
+
         detection = detect_advertising(content, member_name or str(member.get("member_name") or ""), settings)
         blocked = active_block(member, now)
         penalty_applied = False

@@ -140,6 +140,8 @@ class GroupModerationSettingsUpdate(BaseModel):
     detect_content_keywords: bool = True
     detect_nickname_keywords: bool = True
     exempt_admins: bool = True
+    retract_merged_messages: bool = False
+    retract_group_cards: bool = False
     penalty_minutes: list[int] = Field(default_factory=lambda: list(DEFAULT_PENALTY_MINUTES), min_length=1, max_length=8)
     permanent_after: int = Field(default=5, ge=2, le=20)
     escalation_cooldown_seconds: int = Field(default=60, ge=0, le=3600)

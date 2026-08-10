@@ -150,6 +150,8 @@ export interface GroupModerationSettings {
   detect_content_keywords: boolean
   detect_nickname_keywords: boolean
   exempt_admins: boolean
+  retract_merged_messages: boolean
+  retract_group_cards: boolean
   penalty_minutes: number[]
   permanent_after: number
   escalation_cooldown_seconds: number

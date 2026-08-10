@@ -84,6 +84,8 @@ function ruleText(rule: string) {
     wechat: '微信联系方式',
     content_keyword: '内容广告词',
     nickname_keyword: '昵称广告词',
+    merged_message: '合并消息',
+    group_card: '群名片',
     active_penalty: '处罚期发言',
   }
   return map[rule] || rule || '—'
@@ -116,6 +118,8 @@ async function save() {
       detect_content_keywords: settings.value.detect_content_keywords,
       detect_nickname_keywords: settings.value.detect_nickname_keywords,
       exempt_admins: settings.value.exempt_admins,
+      retract_merged_messages: settings.value.retract_merged_messages,
+      retract_group_cards: settings.value.retract_group_cards,
       penalty_minutes: parsePenaltyMinutes(),
       permanent_after: Number(settings.value.permanent_after),
       escalation_cooldown_seconds: Number(settings.value.escalation_cooldown_seconds),
@@ -207,6 +211,8 @@ onMounted(async () => {
                 <label><input v-model="settings.detect_wechat" type="checkbox"> 微信联系方式</label>
                 <label><input v-model="settings.detect_content_keywords" type="checkbox"> 消息广告词</label>
                 <label><input v-model="settings.detect_nickname_keywords" type="checkbox"> 昵称广告词</label>
+                <label><input v-model="settings.retract_merged_messages" type="checkbox"> 合并消息</label>
+                <label><input v-model="settings.retract_group_cards" type="checkbox"> 群名片</label>
                 <label><input v-model="settings.exempt_admins" type="checkbox"> 豁免群主和管理员</label>
               </div>
               <div class="keyword-grid">
