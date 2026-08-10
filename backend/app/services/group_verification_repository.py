@@ -103,8 +103,6 @@ class GroupVerificationRepository:
 
                 CREATE INDEX IF NOT EXISTS idx_verification_sessions_bot_status
                     ON verification_sessions(bot_id, status, joined_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_verification_sessions_deadline
-                    ON verification_sessions(status, deadline_at);
 
                 CREATE TABLE IF NOT EXISTS verification_processed_messages (
                     message_id TEXT NOT NULL,
@@ -152,6 +150,13 @@ class GroupVerificationRepository:
                 "mute_expire_at": "TEXT",
                 "muted_until": "TEXT",
             })
+            # Indexes that reference migrated columns must be created after ALTER TABLE.
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_verification_sessions_deadline
+                    ON verification_sessions(status, deadline_at)
+                """
+            )
 
     @staticmethod
     def _json_list(value: Any) -> list[str]:
