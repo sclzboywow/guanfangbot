@@ -65,7 +65,10 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
 
 
 @router.get("/status")
-def status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+async def status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    require_owned_bot(bot_id, user)
+    # Fill missing group names when opening the page (existing rows often predate /info sync).
+    await group_management_service.backfill_missing_group_names(bot_id, limit=15)
     return _status(bot_id, user)
 
 

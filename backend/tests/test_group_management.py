@@ -29,6 +29,31 @@ def service_with_client(path: Path, client: FakeClient) -> tuple[GroupManagement
     return GroupManagementService(repository, provider), repository
 
 
+def test_existing_group_without_name_refreshes_info_on_event(tmp_path: Path) -> None:
+    client = FakeClient([
+        {
+            "status_code": 200,
+            "data": {
+                "group_openid": "group-1",
+                "group_name": "补全后的群名",
+                "group_member_num": 12,
+            },
+        }
+    ])
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.remember_group("bot-1", "group-1", source="event:GROUP_MESSAGE_CREATE")
+    assert repository.list_groups("bot-1")[0]["group_name"] == ""
+
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", {
+        "d": {"group_openid": "group-1", "id": "msg-1", "content": "hi"},
+    }))
+
+    group = repository.list_groups("bot-1")[0]
+    assert group["group_name"] == "补全后的群名"
+    assert group["group_member_num"] == 12
+    assert client.requests[0][0:2] == ("GET", "/v2/groups/group-1/info")
+
+
 def test_join_request_event_is_persisted_and_group_is_remembered(tmp_path: Path) -> None:
     service, repository = service_with_client(tmp_path / "management.db", FakeClient())
     payload = {

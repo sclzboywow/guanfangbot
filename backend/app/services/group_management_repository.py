@@ -172,6 +172,56 @@ class GroupManagementRepository:
             )
         return not existed
 
+    def get_group(self, bot_id: str, group_openid: str) -> dict[str, Any] | None:
+        cleaned = str(group_openid or "").strip()
+        if not cleaned:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM managed_groups WHERE bot_id=? AND group_openid=?",
+                (bot_id, cleaned),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["group_tags"] = json.loads(item.get("group_tags") or "[]")
+        except ValueError:
+            item["group_tags"] = []
+        return item
+
+    def needs_group_info(self, bot_id: str, group_openid: str) -> bool:
+        group = self.get_group(bot_id, group_openid)
+        if group is None:
+            return True
+        if str(group.get("group_name") or "").strip():
+            return False
+        # Empty name and never successfully/attempted synced via /info.
+        return not group.get("info_synced_at")
+
+    def list_groups_missing_names(self, bot_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM managed_groups
+                WHERE bot_id=? AND (group_name IS NULL OR group_name='')
+                ORDER BY
+                    CASE WHEN info_synced_at IS NULL THEN 0 ELSE 1 END,
+                    last_seen_at DESC
+                LIMIT ?
+                """,
+                (bot_id, max(1, min(int(limit), 100))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["group_tags"] = json.loads(item.get("group_tags") or "[]")
+            except ValueError:
+                item["group_tags"] = []
+            result.append(item)
+        return result
+
     def list_groups(self, bot_id: str) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(

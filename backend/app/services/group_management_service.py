@@ -127,13 +127,20 @@ class GroupManagementService:
                 group_member_num=event_data.get("group_member_num") if isinstance(event_data.get("group_member_num"), int) else None,
                 source=f"event:{event_type}",
             )
-            if is_new_group:
+            # Events usually omit group_name; pull /info for first sighting or unsynced empty names.
+            if is_new_group or self.repository.needs_group_info(bot_id, group_openid):
                 try:
                     await self.refresh_group_info(bot_id, group_openid)
                 except HTTPException as exc:
+                    detail = exc.detail
+                    message = detail.get("message") if isinstance(detail, dict) else str(detail)
                     self.repository.remember_group(
-                        bot_id, group_openid, group_id=extract_group_number(payload),
-                        source=f"event:{event_type}", info_sync_error=str(exc.detail),
+                        bot_id,
+                        group_openid,
+                        group_id=extract_group_number(payload),
+                        source=f"event:{event_type}",
+                        info_synced=True,
+                        info_sync_error=str(message or detail)[:500],
                     )
         if event_type != "GROUP_JOIN_REQUEST":
             return
@@ -152,6 +159,30 @@ class GroupManagementService:
             else "",
             detail="已接收入群申请事件" if recorded else "事件缺少必要标识",
         )
+
+    async def backfill_missing_group_names(self, bot_id: str, *, limit: int = 10) -> dict[str, int]:
+        """Best-effort /info refresh for groups still missing display names."""
+        refreshed = 0
+        failed = 0
+        for group in self.repository.list_groups_missing_names(bot_id, limit=limit):
+            group_openid = str(group.get("group_openid") or "")
+            if not group_openid:
+                continue
+            try:
+                await self.refresh_group_info(bot_id, group_openid)
+                refreshed += 1
+            except HTTPException as exc:
+                failed += 1
+                detail = exc.detail
+                message = detail.get("message") if isinstance(detail, dict) else str(detail)
+                self.repository.remember_group(
+                    bot_id,
+                    group_openid,
+                    source="group_info_backfill",
+                    info_synced=True,
+                    info_sync_error=str(message or detail)[:500],
+                )
+        return {"refreshed": refreshed, "failed": failed, "checked": refreshed + failed}
 
     async def sync_join_requests(self, bot_id: str, group_openid: str) -> dict[str, Any]:
         group_openid = str(group_openid or "").strip()
