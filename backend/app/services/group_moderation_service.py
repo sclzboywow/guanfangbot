@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
-from urllib.parse import quote
 
 from app.services.group_moderation_repository import GroupModerationRepository, group_moderation_repository
+from app.services.group_mute_repository import GroupMuteLeaseRepository
+from app.services.group_mute_service import GroupMuteCoordinator, group_mute_coordinator
 from app.services.group_verification_repository import group_verification_repository
 from app.services.group_verification_service import (
     extract_group_openid,
@@ -179,6 +180,14 @@ class GroupModerationService:
     ) -> None:
         self.repository = repository
         self._client_provider = client_provider or client_manager.get
+        self._mute_coordinator = (
+            group_mute_coordinator
+            if repository is group_moderation_repository and client_provider is None
+            else GroupMuteCoordinator(
+                GroupMuteLeaseRepository(repository.path.with_name("group_mute_leases.db")),
+                self._client_provider,
+            )
+        )
 
     async def set_official_mute(
         self,
@@ -191,16 +200,19 @@ class GroupModerationService:
         member_id: str | None = None,
         rule: str = "manual",
     ) -> dict[str, Any]:
-        client = await self._client_provider(bot_id)
-        item: dict[str, Any] = {"op": op, "member_openid": member_openid}
-        if op != "del":
-            item["mute_expire_at"] = mute_expire_at
-        result = await client.request(
-            "POST",
-            f"/v2/groups/{quote(group_openid, safe='')}/restrict_chat_setting",
-            None,
-            {"members": [item]},
-        )
+        if op == "del":
+            result = await self._mute_coordinator.release(
+                bot_id, group_openid, member_openid, source="moderation"
+            )
+        else:
+            result = await self._mute_coordinator.apply(
+                bot_id,
+                group_openid,
+                member_openid,
+                source="moderation",
+                expire_at=mute_expire_at,
+                detail=rule,
+            )
         status_code = int(result.get("status_code", 0)) or None
         success = status_code is not None and 200 <= status_code < 300
         self.repository.add_log(
@@ -215,6 +227,33 @@ class GroupModerationService:
             detail=str(result.get("data", "")),
         )
         return result
+
+    async def _mute_for_special_rule(
+        self,
+        bot_id: str,
+        group_openid: str,
+        member_openid: str,
+        member_id: str,
+        settings: dict[str, Any],
+        *,
+        action_key: str,
+        rule: str,
+        now: datetime,
+    ) -> str | None:
+        if not settings.get("use_official_mute", True) or settings.get(action_key) != "mute":
+            return None
+        mute_minutes = max(1, int(settings.get("special_rule_mute_minutes", 60)))
+        expire_at = (now + timedelta(minutes=mute_minutes)).isoformat()
+        result = await self.set_official_mute(
+            bot_id,
+            group_openid,
+            member_openid,
+            op="add",
+            mute_expire_at=expire_at,
+            member_id=member_id,
+            rule=rule,
+        )
+        return expire_at if 200 <= int(result.get("status_code", 0)) < 300 else None
 
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if event_type != "GROUP_MESSAGE_CREATE":
@@ -257,6 +296,18 @@ class GroupModerationService:
                 matched="message_type=102", message_excerpt=single_line(content),
                 success=success, status_code=status_code, detail=detail,
             )
+            blocked_until = await self._mute_for_special_rule(
+                bot_id, group_openid, member_openid, str(member["id"]), settings,
+                action_key="merged_message_action", rule="merged_message", now=now,
+            )
+            if blocked_until:
+                self.repository.apply_penalty(
+                    str(member["id"]), rule="merged_message", matched="message_type=102",
+                    strike_count=int(member.get("strike_count", 0)),
+                    penalty_level=int(member.get("penalty_level", 0)),
+                    blocked_until=blocked_until, permanent=bool(member.get("permanent")),
+                    member_name=member_name, now=now.isoformat(),
+                )
             return
 
         if settings.get("retract_group_cards") and is_group_card(payload):
@@ -275,6 +326,18 @@ class GroupModerationService:
                 matched=matched, message_excerpt=single_line(content),
                 success=success, status_code=status_code, detail=detail,
             )
+            blocked_until = await self._mute_for_special_rule(
+                bot_id, group_openid, member_openid, str(member["id"]), settings,
+                action_key="group_card_action", rule="group_card", now=now,
+            )
+            if blocked_until:
+                self.repository.apply_penalty(
+                    str(member["id"]), rule="group_card", matched=matched,
+                    strike_count=int(member.get("strike_count", 0)),
+                    penalty_level=int(member.get("penalty_level", 0)),
+                    blocked_until=blocked_until, permanent=bool(member.get("permanent")),
+                    member_name=member_name, now=now.isoformat(),
+                )
             return
 
         detection = detect_advertising(content, member_name or str(member.get("member_name") or ""), settings)

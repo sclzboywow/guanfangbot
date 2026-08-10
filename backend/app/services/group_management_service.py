@@ -9,6 +9,11 @@ from app.services.group_management_repository import (
     GroupManagementRepository,
     group_management_repository,
 )
+from app.services.group_mute_repository import (
+    GroupMuteLeaseRepository,
+    group_mute_lease_repository,
+    parse_time,
+)
 from app.services.group_verification_service import extract_group_openid
 from app.services.qqbot_client import QQBotClient, client_manager
 
@@ -70,6 +75,11 @@ class GroupManagementService:
     ) -> None:
         self.repository = repository
         self._client_provider = client_provider or client_manager.get
+        self._mute_repository = (
+            group_mute_lease_repository
+            if repository is group_management_repository and client_provider is None
+            else GroupMuteLeaseRepository(repository.path.with_name("group_mute_leases.db"))
+        )
 
     async def _request(
         self,
@@ -220,14 +230,44 @@ class GroupManagementService:
     ) -> dict[str, Any]:
         if not 1 <= len(members) <= 10:
             raise HTTPException(status_code=422, detail="每次请选择 1 至 10 名成员")
+        normalized: list[dict[str, Any]] = []
+        for member in members:
+            item = dict(member)
+            member_openid = str(item.get("member_openid") or "")
+            if item.get("op") == "del":
+                normalized.append(item)
+                continue
+            requested = parse_time(str(item.get("mute_expire_at") or ""))
+            leases = self._mute_repository.active_leases(
+                bot_id, group_openid, member_openid
+            )
+            other_sources = [lease for lease in leases if lease["source"] != "manual"]
+            if requested is not None and leases:
+                effective = max([requested, *[lease["expire_at_dt"] for lease in other_sources]])
+                item["mute_expire_at"] = effective.isoformat()
+                item["op"] = "update"
+            normalized.append(item)
         await self._request(
             bot_id,
             "POST",
             f"/v2/groups/{quote(group_openid, safe='')}/restrict_chat_setting",
-            body={"members": members},
+            body={"members": normalized},
             action="set_member_mutes",
             group_openid=group_openid,
         )
+        for original in members:
+            member_openid = str(original.get("member_openid") or "")
+            if original.get("op") == "del":
+                self._mute_repository.clear_member(bot_id, group_openid, member_openid)
+            else:
+                self._mute_repository.upsert(
+                    bot_id,
+                    group_openid,
+                    member_openid,
+                    "manual",
+                    str(original.get("mute_expire_at") or ""),
+                    detail="官方群管理手动设置",
+                )
         return await self.get_mute_setting(bot_id, group_openid)
 
     async def list_strategies(self, bot_id: str) -> dict[str, Any]:

@@ -85,9 +85,15 @@ export interface EventStatusResponse {
 export interface GroupVerificationSettings {
   bot_id: string
   enabled: boolean
+  verification_mode: 'math' | 'manual_mute'
   min_operand: number
   max_operand: number
+  verification_timeout_minutes: number
+  max_wrong_attempts: number
+  failure_action: 'mute' | 'retract_only'
+  failure_mute_minutes: number
   success_message: string
+  manual_review_message: string
   updated_at?: string | null
 }
 
@@ -102,9 +108,13 @@ export interface GroupVerificationSession {
   operator: '+' | '-'
   answer: number
   question: string
-  status: 'pending' | 'verified' | 'removed'
+  status: 'pending' | 'verified' | 'failed' | 'removed'
   joined_at: string
+  deadline_at?: string | null
   verified_at?: string | null
+  failed_at?: string | null
+  failure_reason: string
+  muted_until?: string | null
   removed_at?: string | null
   wrong_attempts: number
   retracted_messages: number
@@ -130,13 +140,15 @@ export interface GroupVerificationStatus {
   settings: GroupVerificationSettings
   required_events: Array<{ code: string; configured: boolean }>
   requirements_ready: boolean
-  counts: { pending: number; verified: number; removed: number; total: number }
+  counts: { pending: number; verified: number; failed: number; removed: number; total: number }
   sessions: GroupVerificationSession[]
   logs: GroupVerificationLog[]
   behavior: {
     answer_requires_at: boolean
     pending_messages_retracted: boolean
     verification_expires: boolean
+    official_mute_on_failure: boolean
+    verification_mode: 'math' | 'manual_mute'
     outbound_messages_single_line: boolean
   }
 }
@@ -229,6 +241,9 @@ export interface GroupModerationSettings {
   use_official_mute: boolean
   retract_merged_messages: boolean
   retract_group_cards: boolean
+  merged_message_action: 'retract' | 'mute'
+  group_card_action: 'retract' | 'mute'
+  special_rule_mute_minutes: number
   penalty_minutes: number[]
   permanent_after: number
   escalation_cooldown_seconds: number
@@ -308,7 +323,7 @@ export const api = {
   recentEvents: (botId?: string) => request<BotEvent[]>(botId ? `/events/recent?bot_id=${encodeURIComponent(botId)}` : '/events/recent'),
   eventStatus: (botId: string) => request<EventStatusResponse>(`/events/status?bot_id=${encodeURIComponent(botId)}`),
   groupVerificationStatus: (botId: string) => request<GroupVerificationStatus>(`/group-verification/status?bot_id=${encodeURIComponent(botId)}`),
-  updateGroupVerificationSettings: (botId: string, payload: { enabled: boolean; min_operand: number; max_operand: number; success_message: string }) =>
+  updateGroupVerificationSettings: (botId: string, payload: Omit<GroupVerificationSettings, 'bot_id' | 'updated_at'>) =>
     request<GroupVerificationStatus>(`/group-verification/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   verifyGroupMember: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST' }),
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),

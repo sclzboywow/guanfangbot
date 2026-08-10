@@ -301,6 +301,34 @@ def test_retract_group_card_when_enabled(tmp_path: Path) -> None:
     assert "建筑工程" in logs[0]["matched"]
 
 
+def test_group_card_can_retract_and_use_official_mute(tmp_path: Path) -> None:
+    repository = GroupModerationRepository(tmp_path / "moderation.db")
+    enabled_settings(
+        repository,
+        retract_group_cards=True,
+        group_card_action="mute",
+        special_rule_mute_minutes=90,
+    )
+    client = FakeClient()
+
+    async def provider(_bot_id: str):
+        return client
+
+    service = GroupModerationService(repository, provider)
+    asyncio.run(service.handle_event("bot-1", "GROUP_MESSAGE_CREATE", group_card_payload(message_id="card-mute")))
+
+    assert client.retracted == [("group-1", "card-mute")]
+    assert len(client.requests) == 1
+    assert client.requests[0][0] == "POST"
+    assert client.requests[0][2]["members"][0]["op"] == "add"
+    member = repository.get_member("bot-1", "group-1", "member-1")
+    assert member is not None
+    assert member["blocked_until"]
+    assert member["strike_count"] == 0
+    logs = repository.list_logs("bot-1")
+    assert any(log["action"] == "official_mute" and log["rule"] == "group_card" for log in logs)
+
+
 def test_group_card_ignored_when_disabled(tmp_path: Path) -> None:
     repository = GroupModerationRepository(tmp_path / "moderation.db")
     enabled_settings(repository, retract_group_cards=False)

@@ -565,7 +565,7 @@ onMounted(async () => {
       </template>
 
       <section v-else-if="tab === 'legacy'" class="card panel legacy-panel">
-        <h2 class="section-title">入群后数学题验证</h2><p>该功能保留为兼容模式：成员先进入群，再答题，错误消息由机器人撤回。新群建议优先使用官方群审批。</p><RouterLink :to="`/group-verification-legacy?bot=${botId}`" class="btn">打开兼容验证设置</RouterLink>
+        <h2 class="section-title">入群后兼容验证</h2><p>成员入群后可选择数学题验证，或先官方禁言再由管理员人工审核。新群建议优先使用官方群审批。</p><RouterLink :to="`/group-verification-legacy?bot=${botId}`" class="btn">打开兼容验证设置</RouterLink>
       </section>
 
       <p v-if="message" class="notice ok">{{ message }}</p>

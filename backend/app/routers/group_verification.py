@@ -16,11 +16,12 @@ router = APIRouter(prefix="/group-verification", tags=["group-verification"])
 def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
     bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
+    settings = group_verification_repository.get_settings(bot_id)
     return {
         "bot_id": bot.id,
         "app_id": bot.app_id,
         "bot_name": bot.name,
-        "settings": group_verification_repository.get_settings(bot_id),
+        "settings": settings,
         "required_events": [
             {"code": code, "configured": code in configured}
             for code in REQUIRED_EVENTS
@@ -32,14 +33,18 @@ def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
         "behavior": {
             "answer_requires_at": False,
             "pending_messages_retracted": True,
-            "verification_expires": False,
+            "verification_expires": True,
+            "official_mute_on_failure": settings.get("failure_action") == "mute",
+            "verification_mode": settings.get("verification_mode", "math"),
             "outbound_messages_single_line": True,
         },
     }
 
 
 @router.get("/status")
-def verification_status(bot_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+async def verification_status(bot_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+    require_owned_bot(bot_id, user)
+    await group_verification_service.process_expired_sessions()
     return _status_payload(bot_id, user)
 
 
@@ -53,13 +58,7 @@ def update_verification_settings(
     if payload.enabled:
         selected = list(dict.fromkeys([*bot.event_scopes, *REQUIRED_EVENTS]))
         bot_repository.update(bot_id, BotUpdate(event_scopes=selected))
-    group_verification_repository.update_settings(
-        bot_id,
-        enabled=payload.enabled,
-        min_operand=payload.min_operand,
-        max_operand=payload.max_operand,
-        success_message=payload.success_message,
-    )
+    group_verification_repository.update_settings(bot_id, **payload.model_dump())
     return _status_payload(bot_id, user)
 
 
@@ -73,6 +72,8 @@ async def manual_verify(session_id: str, user: AuthUser = Depends(require_user))
         await group_verification_service.verify_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)
 
 
@@ -86,20 +87,19 @@ async def reset_verification(session_id: str, user: AuthUser = Depends(require_u
         await group_verification_service.reset_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)
 
 
 @router.post("/sessions/{session_id}/close")
-def close_verification(session_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+async def close_verification(session_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     session = group_verification_repository.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="验证记录不存在")
     require_owned_bot(str(session["bot_id"]), user)
-    group_verification_repository.close_session(session_id)
-    group_verification_repository.add_log(
-        bot_id=str(session["bot_id"]),
-        session_id=session_id,
-        action="manual_close",
-        success=True,
-    )
+    try:
+        await group_verification_service.close_session(session_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _status_payload(str(session["bot_id"]), user)

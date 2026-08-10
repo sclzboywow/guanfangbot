@@ -10,6 +10,7 @@ from typing import Any
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DATABASE_FILE = DATA_DIR / "group_verification.db"
 DEFAULT_SUCCESS_MESSAGE = "验证通过，你现在可以正常发言。"
+DEFAULT_MANUAL_REVIEW_MESSAGE = "新成员正在等待管理员审核，审核通过后恢复发言。"
 
 
 def utc_now() -> str:
@@ -25,6 +26,10 @@ class GroupVerificationRepository:
         self._lock = threading.RLock()
         self._initialize()
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=10)
         connection.row_factory = sqlite3.Row
@@ -39,9 +44,15 @@ class GroupVerificationRepository:
                 CREATE TABLE IF NOT EXISTS verification_settings (
                     bot_id TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 0,
+                    verification_mode TEXT NOT NULL DEFAULT 'math',
                     min_operand INTEGER NOT NULL DEFAULT 1,
                     max_operand INTEGER NOT NULL DEFAULT 20,
+                    verification_timeout_minutes INTEGER NOT NULL DEFAULT 3,
+                    max_wrong_attempts INTEGER NOT NULL DEFAULT 3,
+                    failure_action TEXT NOT NULL DEFAULT 'mute',
+                    failure_mute_minutes INTEGER NOT NULL DEFAULT 1440,
                     success_message TEXT NOT NULL DEFAULT '验证通过，你现在可以正常发言。',
+                    manual_review_message TEXT NOT NULL DEFAULT '新成员正在等待管理员审核，审核通过后恢复发言。',
                     updated_at TEXT NOT NULL
                 );
 
@@ -58,7 +69,11 @@ class GroupVerificationRepository:
                     question TEXT NOT NULL,
                     status TEXT NOT NULL,
                     joined_at TEXT NOT NULL,
+                    deadline_at TEXT,
                     verified_at TEXT,
+                    failed_at TEXT,
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    muted_until TEXT,
                     removed_at TEXT,
                     wrong_attempts INTEGER NOT NULL DEFAULT 0,
                     retracted_messages INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +117,36 @@ class GroupVerificationRepository:
                     "ALTER TABLE verification_settings "
                     "ADD COLUMN success_message TEXT NOT NULL DEFAULT '验证通过，你现在可以正常发言。'"
                 )
+            setting_migrations = {
+                "verification_mode": "TEXT NOT NULL DEFAULT 'math'",
+                "verification_timeout_minutes": "INTEGER NOT NULL DEFAULT 3",
+                "max_wrong_attempts": "INTEGER NOT NULL DEFAULT 3",
+                "failure_action": "TEXT NOT NULL DEFAULT 'mute'",
+                "failure_mute_minutes": "INTEGER NOT NULL DEFAULT 1440",
+                "manual_review_message": (
+                    "TEXT NOT NULL DEFAULT '新成员正在等待管理员审核，审核通过后恢复发言。'"
+                ),
+            }
+            for column, definition in setting_migrations.items():
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE verification_settings ADD COLUMN {column} {definition}"
+                    )
+            session_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(verification_sessions)").fetchall()
+            }
+            session_migrations = {
+                "deadline_at": "TEXT",
+                "failed_at": "TEXT",
+                "failure_reason": "TEXT NOT NULL DEFAULT ''",
+                "muted_until": "TEXT",
+            }
+            for column, definition in session_migrations.items():
+                if column not in session_columns:
+                    connection.execute(
+                        f"ALTER TABLE verification_sessions ADD COLUMN {column} {definition}"
+                    )
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -116,9 +161,15 @@ class GroupVerificationRepository:
             return {
                 "bot_id": bot_id,
                 "enabled": False,
+                "verification_mode": "math",
                 "min_operand": 1,
                 "max_operand": 20,
+                "verification_timeout_minutes": 3,
+                "max_wrong_attempts": 3,
+                "failure_action": "mute",
+                "failure_mute_minutes": 1440,
                 "success_message": DEFAULT_SUCCESS_MESSAGE,
+                "manual_review_message": DEFAULT_MANUAL_REVIEW_MESSAGE,
                 "updated_at": None,
             }
         result = dict(row)
@@ -130,26 +181,44 @@ class GroupVerificationRepository:
         bot_id: str,
         *,
         enabled: bool,
+        verification_mode: str = "math",
         min_operand: int,
         max_operand: int,
+        verification_timeout_minutes: int = 3,
+        max_wrong_attempts: int = 3,
+        failure_action: str = "mute",
+        failure_mute_minutes: int = 1440,
         success_message: str = DEFAULT_SUCCESS_MESSAGE,
+        manual_review_message: str = DEFAULT_MANUAL_REVIEW_MESSAGE,
     ) -> dict[str, Any]:
         updated_at = utc_now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO verification_settings(
-                    bot_id, enabled, min_operand, max_operand, success_message, updated_at
+                    bot_id, enabled, verification_mode, min_operand, max_operand,
+                    verification_timeout_minutes, max_wrong_attempts, failure_action,
+                    failure_mute_minutes, success_message, manual_review_message, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     enabled = excluded.enabled,
+                    verification_mode = excluded.verification_mode,
                     min_operand = excluded.min_operand,
                     max_operand = excluded.max_operand,
+                    verification_timeout_minutes = excluded.verification_timeout_minutes,
+                    max_wrong_attempts = excluded.max_wrong_attempts,
+                    failure_action = excluded.failure_action,
+                    failure_mute_minutes = excluded.failure_mute_minutes,
                     success_message = excluded.success_message,
+                    manual_review_message = excluded.manual_review_message,
                     updated_at = excluded.updated_at
                 """,
-                (bot_id, int(enabled), min_operand, max_operand, success_message, updated_at),
+                (
+                    bot_id, int(enabled), verification_mode, min_operand, max_operand,
+                    verification_timeout_minutes, max_wrong_attempts, failure_action,
+                    failure_mute_minutes, success_message, manual_review_message, updated_at,
+                ),
             )
         return self.get_settings(bot_id)
 
@@ -166,6 +235,7 @@ class GroupVerificationRepository:
         answer: int,
         question: str,
         joined_at: str | None = None,
+        deadline_at: str | None = None,
     ) -> dict[str, Any]:
         session_id = f"verify-{uuid.uuid4().hex[:16]}"
         joined_at = joined_at or utc_now()
@@ -182,9 +252,10 @@ class GroupVerificationRepository:
                 INSERT INTO verification_sessions(
                     id, bot_id, group_openid, member_openid, member_name,
                     operand_a, operand_b, operator, answer, question, status,
-                    joined_at, verified_at, removed_at, wrong_attempts,
+                    joined_at, deadline_at, verified_at, failed_at, failure_reason,
+                    muted_until, removed_at, wrong_attempts,
                     retracted_messages, last_message_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, 0, 0, NULL, '')
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, '', NULL, NULL, 0, 0, NULL, '')
                 ON CONFLICT(bot_id, group_openid, member_openid) DO UPDATE SET
                     member_name = CASE
                         WHEN excluded.member_name != '' THEN excluded.member_name
@@ -197,7 +268,11 @@ class GroupVerificationRepository:
                     question = excluded.question,
                     status = 'pending',
                     joined_at = excluded.joined_at,
+                    deadline_at = excluded.deadline_at,
                     verified_at = NULL,
+                    failed_at = NULL,
+                    failure_reason = '',
+                    muted_until = NULL,
                     removed_at = NULL,
                     wrong_attempts = 0,
                     retracted_messages = 0,
@@ -216,6 +291,7 @@ class GroupVerificationRepository:
                     answer,
                     question,
                     joined_at,
+                    deadline_at,
                 ),
             )
         session = self.get_session(session_id)
@@ -296,8 +372,51 @@ class GroupVerificationRepository:
     def mark_verified(self, session_id: str, *, verified_at: str | None = None) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
-                "UPDATE verification_sessions SET status='verified', verified_at=?, last_error='' WHERE id=?",
+                """
+                UPDATE verification_sessions SET
+                    status='verified', verified_at=?, failed_at=NULL,
+                    failure_reason='', muted_until=NULL, last_error=''
+                WHERE id=?
+                """,
                 (verified_at or utc_now(), session_id),
+            )
+
+    def mark_failed(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        muted_until: str | None,
+        failed_at: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE verification_sessions SET
+                    status='failed', failed_at=?, failure_reason=?, muted_until=?, last_error=''
+                WHERE id=? AND status='pending'
+                """,
+                (failed_at or utc_now(), reason[:100], muted_until, session_id),
+            )
+
+    def set_pending_mute(self, session_id: str, muted_until: str | None, *, error: str = "") -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE verification_sessions SET muted_until=?, last_error=?
+                WHERE id=? AND status='pending'
+                """,
+                (muted_until, error[:500], session_id),
+            )
+
+    def clear_deadline(self, session_id: str, *, error: str = "") -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE verification_sessions SET deadline_at=NULL, last_error=?
+                WHERE id=? AND status='pending'
+                """,
+                (error[:500], session_id),
             )
 
     def mark_removed(self, bot_id: str, group_openid: str, member_openid: str) -> None:
@@ -326,17 +445,19 @@ class GroupVerificationRepository:
         operator: str,
         answer: int,
         question: str,
+        deadline_at: str | None = None,
     ) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
                 UPDATE verification_sessions SET
                     operand_a=?, operand_b=?, operator=?, answer=?, question=?,
-                    status='pending', verified_at=NULL, removed_at=NULL,
+                    status='pending', deadline_at=?, verified_at=NULL, failed_at=NULL,
+                    failure_reason='', muted_until=NULL, removed_at=NULL,
                     wrong_attempts=0, retracted_messages=0, last_error=''
                 WHERE id=?
                 """,
-                (operand_a, operand_b, operator, answer, question, session_id),
+                (operand_a, operand_b, operator, answer, question, deadline_at, session_id),
             )
         return self.get_session(session_id)
 
@@ -348,7 +469,7 @@ class GroupVerificationRepository:
         status_code: int | None,
         detail: str,
         received_at: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
@@ -368,6 +489,19 @@ class GroupVerificationRepository:
                 """,
                 (int(retracted), status_code, detail[:1000], utc_now(), session_id),
             )
+        return self.get_session(session_id)
+
+    def list_expired_pending(self, now: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM verification_sessions
+                WHERE status='pending' AND deadline_at IS NOT NULL AND deadline_at!='' AND deadline_at<=?
+                ORDER BY deadline_at ASC LIMIT ?
+                """,
+                (now, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_log(
         self,
@@ -398,6 +532,7 @@ class GroupVerificationRepository:
         return {
             "pending": values.get("pending", 0),
             "verified": values.get("verified", 0),
+            "failed": values.get("failed", 0),
             "removed": values.get("removed", 0),
             "total": sum(values.values()),
         }

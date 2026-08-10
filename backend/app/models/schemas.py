@@ -113,9 +113,19 @@ class BotUpdate(BaseModel):
 
 class GroupVerificationSettingsUpdate(BaseModel):
     enabled: bool = False
+    verification_mode: Literal["math", "manual_mute"] = "math"
     min_operand: int = Field(default=1, ge=0, le=100)
     max_operand: int = Field(default=20, ge=1, le=100)
+    verification_timeout_minutes: int = Field(default=3, ge=1, le=1440)
+    max_wrong_attempts: int = Field(default=3, ge=1, le=20)
+    failure_action: Literal["mute", "retract_only"] = "mute"
+    failure_mute_minutes: int = Field(default=1440, ge=1, le=43200)
     success_message: str = Field(default="验证通过，你现在可以正常发言。", min_length=1, max_length=200)
+    manual_review_message: str = Field(
+        default="新成员正在等待管理员审核，审核通过后恢复发言。",
+        min_length=1,
+        max_length=200,
+    )
 
     @field_validator("success_message")
     @classmethod
@@ -123,6 +133,14 @@ class GroupVerificationSettingsUpdate(BaseModel):
         cleaned = " ".join(value.split())
         if not cleaned:
             raise ValueError("验证成功提示不能为空")
+        return cleaned
+
+    @field_validator("manual_review_message")
+    @classmethod
+    def normalize_manual_review_message(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("人工审核提示不能为空")
         return cleaned
 
     @model_validator(mode="after")
@@ -275,6 +293,9 @@ class GroupModerationSettingsUpdate(BaseModel):
     use_official_mute: bool = True
     retract_merged_messages: bool = False
     retract_group_cards: bool = False
+    merged_message_action: Literal["retract", "mute"] = "retract"
+    group_card_action: Literal["retract", "mute"] = "retract"
+    special_rule_mute_minutes: int = Field(default=60, ge=1, le=43200)
     penalty_minutes: list[int] = Field(default_factory=lambda: list(DEFAULT_PENALTY_MINUTES), min_length=1, max_length=8)
     permanent_after: int = Field(default=5, ge=2, le=20)
     escalation_cooldown_seconds: int = Field(default=60, ge=0, le=3600)

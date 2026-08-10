@@ -138,6 +138,16 @@ class GroupModerationRepository:
                 connection.execute(
                     "ALTER TABLE moderation_settings ADD COLUMN use_official_mute INTEGER NOT NULL DEFAULT 1"
                 )
+            special_migrations = {
+                "merged_message_action": "TEXT NOT NULL DEFAULT 'retract'",
+                "group_card_action": "TEXT NOT NULL DEFAULT 'retract'",
+                "special_rule_mute_minutes": "INTEGER NOT NULL DEFAULT 60",
+            }
+            for column, definition in special_migrations.items():
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE moderation_settings ADD COLUMN {column} {definition}"
+                    )
 
     @staticmethod
     def _settings_dict(row: sqlite3.Row | None, bot_id: str) -> dict[str, Any]:
@@ -154,6 +164,9 @@ class GroupModerationRepository:
                 "use_official_mute": True,
                 "retract_merged_messages": False,
                 "retract_group_cards": False,
+                "merged_message_action": "retract",
+                "group_card_action": "retract",
+                "special_rule_mute_minutes": 60,
                 "penalty_minutes": list(DEFAULT_PENALTY_MINUTES),
                 "permanent_after": 5,
                 "escalation_cooldown_seconds": 60,
@@ -190,10 +203,11 @@ class GroupModerationRepository:
                     bot_id, enabled, detect_mobile, detect_landline, detect_wechat,
                     detect_content_keywords, detect_nickname_keywords, exempt_admins,
                     retract_merged_messages, retract_group_cards, use_official_mute,
+                    merged_message_action, group_card_action, special_rule_mute_minutes,
                     penalty_minutes, permanent_after,
                     escalation_cooldown_seconds, warning_cooldown_seconds, content_keywords,
                     nickname_keywords, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     enabled = excluded.enabled,
                     detect_mobile = excluded.detect_mobile,
@@ -205,6 +219,9 @@ class GroupModerationRepository:
                     retract_merged_messages = excluded.retract_merged_messages,
                     retract_group_cards = excluded.retract_group_cards,
                     use_official_mute = excluded.use_official_mute,
+                    merged_message_action = excluded.merged_message_action,
+                    group_card_action = excluded.group_card_action,
+                    special_rule_mute_minutes = excluded.special_rule_mute_minutes,
                     penalty_minutes = excluded.penalty_minutes,
                     permanent_after = excluded.permanent_after,
                     escalation_cooldown_seconds = excluded.escalation_cooldown_seconds,
@@ -219,6 +236,8 @@ class GroupModerationRepository:
                     int(bool(current["detect_content_keywords"])), int(bool(current["detect_nickname_keywords"])),
                     int(bool(current["exempt_admins"])), int(bool(current["retract_merged_messages"])),
                     int(bool(current["retract_group_cards"])), int(bool(current["use_official_mute"])),
+                    str(current["merged_message_action"]), str(current["group_card_action"]),
+                    int(current["special_rule_mute_minutes"]),
                     json.dumps(current["penalty_minutes"], ensure_ascii=False),
                     int(current["permanent_after"]), int(current["escalation_cooldown_seconds"]),
                     int(current["warning_cooldown_seconds"]), json.dumps(current["content_keywords"], ensure_ascii=False),
