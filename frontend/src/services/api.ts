@@ -231,6 +231,11 @@ export interface GroupManagementStatus {
     last_polled_at?: string | null
     last_summary?: Record<string, unknown>
   }
+  ingest?: {
+    mode: string
+    required_event: string
+    manual_sync: boolean
+  }
   limits: Record<string, number>
 }
 

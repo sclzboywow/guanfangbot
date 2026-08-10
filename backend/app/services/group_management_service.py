@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
@@ -22,8 +20,6 @@ from app.services.qqbot_client import QQBotClient, client_manager
 
 
 REQUIRED_EVENTS = ("GROUP_JOIN_REQUEST",)
-JOIN_REQUEST_POLL_INTERVAL_SECONDS = 60
-JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = 2.5
 logger = logging.getLogger(__name__)
 
 
@@ -145,40 +141,13 @@ class GroupManagementService:
             if repository is group_management_repository and client_provider is None
             else GroupMuteLeaseRepository(repository.path.with_name("group_mute_leases.db"))
         )
-        self._poll_task: asyncio.Task[None] | None = None
-        self.last_join_request_poll_at: str | None = None
-        self.last_join_request_poll_summary: dict[str, Any] = {}
 
     async def start(self) -> None:
-        if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(
-                self._join_request_poll_loop(),
-                name="group-join-request-poll",
-            )
+        # Join requests rely on official GROUP_JOIN_REQUEST webhook push; no scheduled poll.
+        return
 
     async def stop(self) -> None:
-        task = self._poll_task
-        self._poll_task = None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    async def _join_request_poll_loop(self) -> None:
-        # Stagger the first sweep slightly so startup API traffic settles first.
-        await asyncio.sleep(8)
-        while True:
-            try:
-                self.last_join_request_poll_summary = await self.poll_all_join_requests()
-                self.last_join_request_poll_at = datetime.now(timezone.utc).isoformat()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("group join-request poll sweep failed")
-            await asyncio.sleep(JOIN_REQUEST_POLL_INTERVAL_SECONDS)
+        return
 
     async def _request(
         self,
@@ -354,73 +323,6 @@ class GroupManagementService:
             "truncated": truncated,
             "pruned": pruned,
             "keyword": keyword,
-        }
-
-    async def poll_all_join_requests(self) -> dict[str, Any]:
-        """Pull official join-request lists for every remembered group.
-
-        Official events can be missed while the process is down; this sweep
-        keeps the admin queue warm without exceeding the 30 QPM list limit.
-        Groups where the bot is not an admin are skipped quietly.
-        """
-        targets = self.repository.list_group_targets()
-        groups = 0
-        synced = 0
-        failed = 0
-        skipped_not_admin = 0
-        for index, (bot_id, group_openid) in enumerate(targets):
-            try:
-                result = await self.sync_join_requests(
-                    bot_id,
-                    group_openid,
-                    record_logs=False,
-                    source="scheduled_poll",
-                )
-                groups += 1
-                synced += int(result.get("synced") or 0)
-            except HTTPException as exc:
-                if _is_not_group_admin(exc):
-                    skipped_not_admin += 1
-                    logger.info(
-                        "skip join-request poll: bot is not group admin bot=%s group=%s",
-                        bot_id,
-                        group_openid,
-                    )
-                else:
-                    failed += 1
-                    logger.warning(
-                        "scheduled join-request sync failed bot=%s group=%s detail=%s",
-                        bot_id,
-                        group_openid,
-                        exc.detail,
-                    )
-            except Exception:
-                failed += 1
-                logger.exception(
-                    "scheduled join-request sync failed bot=%s group=%s",
-                    bot_id,
-                    group_openid,
-                )
-            if index + 1 < len(targets):
-                await asyncio.sleep(JOIN_REQUEST_POLL_GROUP_GAP_SECONDS)
-        if targets:
-            # One compact breadcrumb per sweep instead of a log row for every page.
-            self.repository.add_log(
-                bot_id=targets[0][0],
-                action="scheduled_join_request_poll",
-                success=failed == 0,
-                detail=(
-                    f"groups={groups} synced={synced} failed={failed} "
-                    f"skipped_not_admin={skipped_not_admin} targets={len(targets)}"
-                ),
-            )
-        return {
-            "targets": len(targets),
-            "groups": groups,
-            "synced": synced,
-            "failed": failed,
-            "skipped_not_admin": skipped_not_admin,
-            "interval_seconds": JOIN_REQUEST_POLL_INTERVAL_SECONDS,
         }
 
     async def decide_join_request(

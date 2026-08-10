@@ -313,67 +313,24 @@ def test_disabling_auto_approval_disables_each_enabled_official_strategy(tmp_pat
     )
 
 
-def test_scheduled_poll_skips_groups_where_bot_is_not_admin(tmp_path: Path) -> None:
+def test_manual_sync_translates_not_group_admin(tmp_path: Path) -> None:
     client = FakeClient([
         {"status_code": 500, "data": {"message": "not group admin", "code": 11703, "err_code": 11703}},
-        {"status_code": 200, "data": {"list": [{
-            "join_request_id": "request-ok", "member_openid": "member-ok", "username": "可管",
-        }], "next_cursor": ""}},
     ])
-    service, repository = service_with_client(tmp_path / "management.db", client)
-    # list_group_targets is newest-first; remember admin group first so no-admin is polled first.
-    repository.remember_group("bot-1", "group-admin", source="event")
-    repository.remember_group("bot-1", "group-no-admin", source="event")
-
-    import app.services.group_management_service as module
-    original_gap = module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS
-    module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = 0
-    try:
-        summary = asyncio.run(service.poll_all_join_requests())
-    finally:
-        module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = original_gap
-
-    assert summary["targets"] == 2
-    assert summary["skipped_not_admin"] == 1
-    assert summary["groups"] == 1
-    assert summary["failed"] == 0
-    assert summary["synced"] == 1
-    assert repository.list_join_requests("bot-1")[0]["join_request_id"] == "request-ok"
+    service, _ = service_with_client(tmp_path / "management.db", client)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(service.sync_join_requests("bot-1", "group-no-admin"))
+    assert error.value.status_code in {403, 409, 502}
+    detail = error.value.detail
+    text = detail.get("message") if isinstance(detail, dict) else str(detail)
+    assert "管理员" in text or "11703" in text or "not group admin" in text
 
 
-def test_scheduled_poll_syncs_all_remembered_groups_quietly(tmp_path: Path) -> None:
-    client = FakeClient([
-        {"status_code": 200, "data": {"list": [{
-            "join_request_id": "request-a", "member_openid": "member-a", "username": "甲",
-        }], "next_cursor": ""}},
-        {"status_code": 200, "data": {"list": [{
-            "join_request_id": "request-b", "member_openid": "member-b", "username": "乙",
-        }], "next_cursor": ""}},
-    ])
-    service, repository = service_with_client(tmp_path / "management.db", client)
-    repository.remember_group("bot-1", "group-a", source="event")
-    repository.remember_group("bot-1", "group-b", source="event")
-
-    # Avoid sleeping between groups during the unit test.
-    import app.services.group_management_service as module
-    original_gap = module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS
-    module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = 0
-    try:
-        summary = asyncio.run(service.poll_all_join_requests())
-    finally:
-        module.JOIN_REQUEST_POLL_GROUP_GAP_SECONDS = original_gap
-
-    assert summary["targets"] == 2
-    assert summary["groups"] == 2
-    assert summary["synced"] == 2
-    assert summary["failed"] == 0
-    requests = repository.list_join_requests("bot-1")
-    assert {item["join_request_id"] for item in requests} == {"request-a", "request-b"}
-    assert len(client.requests) == 2
-    # Quiet mode should not write a per-page sync log; only optional summary when synced>0.
-    actions = [item["action"] for item in repository.list_logs("bot-1")]
-    assert "sync_join_requests" not in actions
-    assert "scheduled_join_request_poll" in actions
+def test_service_start_does_not_schedule_join_request_poll(tmp_path: Path) -> None:
+    service, _ = service_with_client(tmp_path / "management.db", FakeClient())
+    asyncio.run(service.start())
+    assert getattr(service, "_poll_task", None) is None
+    asyncio.run(service.stop())
 
 
 def _pending_request(verify_info: dict) -> dict:

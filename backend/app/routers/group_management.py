@@ -96,10 +96,10 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
         "known_members": sorted_members,
         "join_requests": group_management_repository.list_join_requests(bot_id),
         "logs": group_management_repository.list_logs(bot_id, limit=100),
-        "poll": {
-            "interval_seconds": 60,
-            "last_polled_at": group_management_service.last_join_request_poll_at,
-            "last_summary": group_management_service.last_join_request_poll_summary,
+        "ingest": {
+            "mode": "event",
+            "required_event": "GROUP_JOIN_REQUEST",
+            "manual_sync": True,
         },
         "limits": {
             "join_request_qpm": 30,

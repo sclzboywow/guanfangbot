@@ -555,7 +555,7 @@ onMounted(async () => {
           <button class="btn primary" :disabled="busy === 'feature-switches'" @click="saveFeatureSwitches">保存关键词规则</button>
         </section>
         <section class="card panel sync-panel">
-          <div><h2 class="section-title">同步指定群的申请</h2><p class="section-sub">后台每 60 秒自动拉取全部已识别群的申请列表；事件到达会即时入库。这里的手动同步用于立刻补拉当前选中群。</p></div>
+          <div><h2 class="section-title">同步指定群的申请</h2><p class="section-sub">新申请由官方 <code>GROUP_JOIN_REQUEST</code> 事件即时推送入库；这里仅在需要时手动补拉当前选中群，不做后台定时轮询。</p></div>
           <div class="inline-form">
             <select v-model="selectedGroup" class="select"><option disabled value="">等待机器人从事件识别群</option><option v-for="group in status.groups" :key="group.group_openid" :value="group.group_openid">{{ group.group_name || `群 ${shortId(group.group_openid)}` }}</option></select>
             <button class="btn primary" :disabled="busy === 'sync'" @click="syncRequests">{{ busy === 'sync' ? '同步中…' : '同步申请' }}</button>
