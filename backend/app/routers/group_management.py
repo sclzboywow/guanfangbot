@@ -17,27 +17,71 @@ from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.group_management_repository import group_management_repository
 from app.services.group_management_service import REQUIRED_EVENTS, group_management_service
+from app.services.group_moderation_repository import group_moderation_repository
 from app.services.group_verification_repository import group_verification_repository
 
 
 router = APIRouter(prefix="/group-management", tags=["group-management"])
 
 
+def _merge_known_member(
+    store: dict[tuple[str, str], dict[str, str]],
+    *,
+    group_openid: str,
+    member_openid: str,
+    username: str = "",
+    last_seen_at: str = "",
+) -> None:
+    group_openid = str(group_openid or "").strip()
+    member_openid = str(member_openid or "").strip()
+    if not group_openid or not member_openid:
+        return
+    key = (group_openid, member_openid)
+    current = store.get(key, {})
+    name = str(username or "").strip() or str(current.get("username") or "").strip()
+    seen = str(last_seen_at or "").strip() or str(current.get("last_seen_at") or "").strip()
+    store[key] = {
+        "group_openid": group_openid,
+        "member_openid": member_openid,
+        "username": name,
+        "last_seen_at": seen,
+    }
+
+
 def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
     bot = require_owned_bot(bot_id, user)
     configured = set(bot.event_scopes)
-    known_members = {
-        (item["group_openid"], item["member_openid"]): item
-        for item in group_management_repository.known_members(bot_id)
-    }
+    known_members: dict[tuple[str, str], dict[str, str]] = {}
+    for item in group_management_repository.known_members(bot_id):
+        _merge_known_member(
+            known_members,
+            group_openid=str(item.get("group_openid") or ""),
+            member_openid=str(item.get("member_openid") or ""),
+            username=str(item.get("username") or ""),
+            last_seen_at=str(item.get("last_seen_at") or ""),
+        )
     for session in group_verification_repository.list_sessions(bot_id, limit=1000):
-        key = (str(session["group_openid"]), str(session["member_openid"]))
-        known_members[key] = {
-            "group_openid": key[0],
-            "member_openid": key[1],
-            "username": str(session.get("member_name") or known_members.get(key, {}).get("username") or ""),
-            "last_seen_at": str(session.get("last_message_at") or session.get("joined_at") or ""),
-        }
+        _merge_known_member(
+            known_members,
+            group_openid=str(session.get("group_openid") or ""),
+            member_openid=str(session.get("member_openid") or ""),
+            username=str(session.get("member_name") or ""),
+            last_seen_at=str(session.get("last_message_at") or session.get("joined_at") or ""),
+        )
+    # Message-moderation already stores author nicknames from GROUP_MESSAGE_CREATE.
+    for member in group_moderation_repository.list_members(bot_id, limit=1000):
+        _merge_known_member(
+            known_members,
+            group_openid=str(member.get("group_openid") or ""),
+            member_openid=str(member.get("member_openid") or ""),
+            username=str(member.get("member_name") or ""),
+            last_seen_at=str(member.get("last_message_at") or member.get("updated_at") or ""),
+        )
+    sorted_members = sorted(
+        known_members.values(),
+        key=lambda item: str(item.get("last_seen_at") or ""),
+        reverse=True,
+    )
     return {
         "bot_id": bot.id,
         "app_id": bot.app_id,
@@ -49,7 +93,7 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
         "requirements_ready": all(code in configured for code in REQUIRED_EVENTS),
         "settings": group_management_repository.get_settings(bot_id),
         "groups": group_management_repository.list_groups(bot_id),
-        "known_members": list(known_members.values()),
+        "known_members": sorted_members,
         "join_requests": group_management_repository.list_join_requests(bot_id),
         "logs": group_management_repository.list_logs(bot_id, limit=100),
         "limits": {
