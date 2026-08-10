@@ -178,6 +178,47 @@ class OfficialJoinDecision(BaseModel):
 class GroupManagementSettingsUpdate(BaseModel):
     manual_approval_enabled: bool = True
     auto_approval_enabled: bool = True
+    keyword_approve_enabled: bool = False
+    keyword_reject_enabled: bool = False
+    approve_keywords: list[str] = Field(default_factory=list, max_length=100)
+    reject_keywords: list[str] = Field(default_factory=list, max_length=100)
+    reject_reason: str = Field(default="", max_length=200)
+    reject_blacklist: bool = False
+
+    @staticmethod
+    def _clean_keywords(value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            word = " ".join(str(item).split()).strip()
+            if not word:
+                continue
+            if len(word) > 50:
+                raise ValueError("单个关键词最长 50 个字符")
+            key = word.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(word)
+            if len(cleaned) > 100:
+                raise ValueError("关键词最多 100 个")
+        return cleaned
+
+    @field_validator("approve_keywords", "reject_keywords")
+    @classmethod
+    def clean_keyword_lists(cls, value: list[str]) -> list[str]:
+        return cls._clean_keywords(value)
+
+    @field_validator("reject_reason")
+    @classmethod
+    def clean_keyword_reject_reason(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @model_validator(mode="after")
+    def validate_keyword_reject_reason(self) -> "GroupManagementSettingsUpdate":
+        if self.keyword_reject_enabled and not self.reject_reason:
+            raise ValueError("开启关键词自动拒绝时，必须填写拒绝理由")
+        return self
 
 
 class OfficialMuteMember(BaseModel):

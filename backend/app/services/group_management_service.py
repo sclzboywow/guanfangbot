@@ -32,6 +32,38 @@ def _data(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else payload
 
 
+def extract_join_request_text(verify_info: Any) -> str:
+    """Applicant-filled verification content only (message + answers, not questions)."""
+    if not isinstance(verify_info, dict):
+        return ""
+    parts: list[str] = []
+    message = str(verify_info.get("verify_message") or "").strip()
+    if message:
+        parts.append(message)
+    qa_list = verify_info.get("review_qa_list")
+    if isinstance(qa_list, list):
+        for item in qa_list:
+            if not isinstance(item, dict):
+                continue
+            answer = str(item.get("answer") or "").strip()
+            if answer:
+                parts.append(answer)
+    return "\n".join(parts)
+
+
+def match_keywords(text: str, words: list[str] | None) -> list[str]:
+    """Case-insensitive substring match; returns hit keywords in list order."""
+    haystack = str(text or "").casefold()
+    if not haystack:
+        return []
+    hits: list[str] = []
+    for word in words or []:
+        cleaned = str(word or "").strip()
+        if cleaned and cleaned.casefold() in haystack:
+            hits.append(cleaned)
+    return hits
+
+
 def _error_code(data: Any) -> int | None:
     if not isinstance(data, dict):
         return None
@@ -161,6 +193,7 @@ class GroupManagementService:
         member_openid: str = "",
         strategy_id: str = "",
         record_log: bool = True,
+        detail: str | None = None,
     ) -> Any:
         client = await self._client_provider(bot_id)
         result = await client.request(method, path, query, body)
@@ -175,7 +208,7 @@ class GroupManagementService:
                 member_openid=member_openid,
                 strategy_id=strategy_id,
                 status_code=status_code,
-                detail=str(result.get("data", "")),
+                detail=detail if detail is not None else str(result.get("data", "")),
             )
         if not success:
             raise _friendly_error(action, result)
@@ -228,6 +261,15 @@ class GroupManagementService:
             else "",
             detail="已接收入群申请事件" if recorded else "事件缺少必要标识",
         )
+        if recorded is not None:
+            try:
+                await self.apply_keyword_rules(bot_id, recorded)
+            except Exception:
+                logger.exception(
+                    "keyword auto-decision failed after join-request event bot=%s request=%s",
+                    bot_id,
+                    recorded.get("join_request_id"),
+                )
 
     async def backfill_missing_group_names(self, bot_id: str, *, limit: int = 10) -> dict[str, int]:
         """Best-effort /info refresh for groups still missing display names."""
@@ -293,7 +335,13 @@ class GroupManagementService:
                 cursor = ""
                 break
             cursor = next_cursor
-        return {"synced": synced, "pages": pages, "truncated": bool(cursor)}
+        keyword = await self.process_pending_keyword_rules(bot_id, group_openid=group_openid)
+        return {
+            "synced": synced,
+            "pages": pages,
+            "truncated": bool(cursor),
+            "keyword": keyword,
+        }
 
     async def poll_all_join_requests(self) -> dict[str, Any]:
         """Pull official join-request lists for every remembered group.
@@ -372,8 +420,11 @@ class GroupManagementService:
         op: str,
         reject_reason: str = "",
         add_to_member_blacklist: bool = False,
+        force: bool = False,
+        log_action: str | None = None,
+        log_detail: str | None = None,
     ) -> dict[str, Any]:
-        if not self.repository.get_settings(bot_id)["manual_approval_enabled"]:
+        if not force and not self.repository.get_settings(bot_id)["manual_approval_enabled"]:
             raise HTTPException(status_code=409, detail="人工审批开关已关闭")
         body: dict[str, Any] = {"op": op, "join_request_id": join_request_id}
         if op == "decline":
@@ -388,9 +439,10 @@ class GroupManagementService:
                 f"{quote(member_openid, safe='')}"
             ),
             body=body,
-            action=f"join_request_{op}",
+            action=log_action or f"join_request_{op}",
             group_openid=group_openid,
             member_openid=member_openid,
+            detail=log_detail,
         )
         self.repository.mark_decision(
             bot_id,
@@ -399,6 +451,111 @@ class GroupManagementService:
             detail=reject_reason,
         )
         return {"ok": True, "decision": op}
+
+    async def apply_keyword_rules(
+        self,
+        bot_id: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Auto approve/decline a pending join request from verification keywords."""
+        if str(request.get("status") or "") != "pending":
+            return None
+        settings = self.repository.get_settings(bot_id)
+        approve_enabled = bool(settings.get("keyword_approve_enabled"))
+        reject_enabled = bool(settings.get("keyword_reject_enabled"))
+        if not approve_enabled and not reject_enabled:
+            return None
+
+        text = extract_join_request_text(request.get("verify_info"))
+        reject_hits = (
+            match_keywords(text, settings.get("reject_keywords") or [])
+            if reject_enabled
+            else []
+        )
+        approve_hits = (
+            match_keywords(text, settings.get("approve_keywords") or [])
+            if approve_enabled
+            else []
+        )
+        # Reject wins when both match.
+        if reject_hits:
+            reason = str(settings.get("reject_reason") or "").strip()
+            if not reason:
+                logger.warning(
+                    "keyword reject enabled without reason; skip bot=%s request=%s",
+                    bot_id,
+                    request.get("join_request_id"),
+                )
+                return None
+            await self.decide_join_request(
+                bot_id,
+                group_openid=str(request.get("group_openid") or ""),
+                member_openid=str(request.get("member_openid") or ""),
+                join_request_id=str(request.get("join_request_id") or ""),
+                op="decline",
+                reject_reason=reason,
+                add_to_member_blacklist=bool(settings.get("reject_blacklist")),
+                force=True,
+                log_action="keyword_auto_decline",
+                log_detail=f"matched={','.join(reject_hits)}",
+            )
+            return {"decision": "decline", "matched": reject_hits}
+        if approve_hits:
+            await self.decide_join_request(
+                bot_id,
+                group_openid=str(request.get("group_openid") or ""),
+                member_openid=str(request.get("member_openid") or ""),
+                join_request_id=str(request.get("join_request_id") or ""),
+                op="approve",
+                force=True,
+                log_action="keyword_auto_approve",
+                log_detail=f"matched={','.join(approve_hits)}",
+            )
+            return {"decision": "approve", "matched": approve_hits}
+        return None
+
+    async def process_pending_keyword_rules(
+        self,
+        bot_id: str,
+        *,
+        group_openid: str | None = None,
+    ) -> dict[str, int]:
+        settings = self.repository.get_settings(bot_id)
+        if not settings.get("keyword_approve_enabled") and not settings.get("keyword_reject_enabled"):
+            return {"checked": 0, "approved": 0, "declined": 0, "failed": 0}
+        checked = 0
+        approved = 0
+        declined = 0
+        failed = 0
+        target_group = str(group_openid or "").strip() or None
+        for request in self.repository.list_join_requests(bot_id):
+            if str(request.get("status") or "") != "pending":
+                continue
+            if target_group and str(request.get("group_openid") or "") != target_group:
+                continue
+            checked += 1
+            try:
+                result = await self.apply_keyword_rules(bot_id, request)
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "keyword auto-decision failed bot=%s request=%s",
+                    bot_id,
+                    request.get("join_request_id"),
+                )
+                continue
+            if not result:
+                continue
+            if result.get("decision") == "approve":
+                approved += 1
+            elif result.get("decision") == "decline":
+                declined += 1
+        return {
+            "checked": checked,
+            "approved": approved,
+            "declined": declined,
+            "failed": failed,
+        }
 
     async def get_mute_setting(self, bot_id: str, group_openid: str) -> dict[str, Any]:
         group_openid = str(group_openid or "").strip()

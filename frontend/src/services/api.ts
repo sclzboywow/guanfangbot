@@ -207,6 +207,12 @@ export interface GroupManagementStatus {
     bot_id: string
     manual_approval_enabled: boolean
     auto_approval_enabled: boolean
+    keyword_approve_enabled: boolean
+    keyword_reject_enabled: boolean
+    approve_keywords: string[]
+    reject_keywords: string[]
+    reject_reason: string
+    reject_blacklist: boolean
     updated_at?: string | null
   }
   groups: ManagedGroup[]
@@ -354,7 +360,16 @@ export const api = {
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),
   closeGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' }),
   groupManagementStatus: (botId: string) => request<GroupManagementStatus>(`/group-management/status?bot_id=${encodeURIComponent(botId)}`),
-  updateGroupManagementSettings: (botId: string, payload: { manual_approval_enabled: boolean; auto_approval_enabled: boolean }) =>
+  updateGroupManagementSettings: (botId: string, payload: {
+    manual_approval_enabled: boolean
+    auto_approval_enabled: boolean
+    keyword_approve_enabled: boolean
+    keyword_reject_enabled: boolean
+    approve_keywords: string[]
+    reject_keywords: string[]
+    reject_reason: string
+    reject_blacklist: boolean
+  }) =>
     request<GroupManagementStatus>(`/group-management/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   enableGroupManagementEvents: (botId: string) => request<GroupManagementStatus>(`/group-management/events/${encodeURIComponent(botId)}/enable`, { method: 'POST' }),
   syncJoinRequests: (botId: string, groupOpenid: string) =>

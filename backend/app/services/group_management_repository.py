@@ -55,6 +55,12 @@ class GroupManagementRepository:
                     bot_id TEXT PRIMARY KEY,
                     manual_approval_enabled INTEGER NOT NULL DEFAULT 1,
                     auto_approval_enabled INTEGER NOT NULL DEFAULT 1,
+                    keyword_approve_enabled INTEGER NOT NULL DEFAULT 0,
+                    keyword_reject_enabled INTEGER NOT NULL DEFAULT 0,
+                    approve_keywords TEXT NOT NULL DEFAULT '[]',
+                    reject_keywords TEXT NOT NULL DEFAULT '[]',
+                    reject_reason TEXT NOT NULL DEFAULT '',
+                    reject_blacklist INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL
                 );
 
@@ -117,6 +123,23 @@ class GroupManagementRepository:
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE managed_groups ADD COLUMN {name} {definition}")
+
+            settings_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(group_management_settings)").fetchall()
+            }
+            for name, definition in {
+                "keyword_approve_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "keyword_reject_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "approve_keywords": "TEXT NOT NULL DEFAULT '[]'",
+                "reject_keywords": "TEXT NOT NULL DEFAULT '[]'",
+                "reject_reason": "TEXT NOT NULL DEFAULT ''",
+                "reject_blacklist": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in settings_columns:
+                    connection.execute(
+                        f"ALTER TABLE group_management_settings ADD COLUMN {name} {definition}"
+                    )
 
     def remember_group(
         self,
@@ -260,11 +283,30 @@ class GroupManagementRepository:
                 "bot_id": bot_id,
                 "manual_approval_enabled": True,
                 "auto_approval_enabled": True,
+                "keyword_approve_enabled": False,
+                "keyword_reject_enabled": False,
+                "approve_keywords": [],
+                "reject_keywords": [],
+                "reject_reason": "",
+                "reject_blacklist": False,
                 "updated_at": None,
             }
         result = dict(row)
-        result["manual_approval_enabled"] = bool(result["manual_approval_enabled"])
-        result["auto_approval_enabled"] = bool(result["auto_approval_enabled"])
+        for key in (
+            "manual_approval_enabled",
+            "auto_approval_enabled",
+            "keyword_approve_enabled",
+            "keyword_reject_enabled",
+            "reject_blacklist",
+        ):
+            result[key] = bool(result.get(key, 0))
+        for key in ("approve_keywords", "reject_keywords"):
+            try:
+                parsed = json.loads(result.get(key) or "[]")
+            except (TypeError, ValueError):
+                parsed = []
+            result[key] = [str(item) for item in parsed] if isinstance(parsed, list) else []
+        result["reject_reason"] = str(result.get("reject_reason") or "")
         return result
 
     def update_settings(
@@ -273,17 +315,44 @@ class GroupManagementRepository:
         *,
         manual_approval_enabled: bool,
         auto_approval_enabled: bool,
+        keyword_approve_enabled: bool = False,
+        keyword_reject_enabled: bool = False,
+        approve_keywords: list[str] | None = None,
+        reject_keywords: list[str] | None = None,
+        reject_reason: str = "",
+        reject_blacklist: bool = False,
     ) -> dict[str, Any]:
+        approve_words = [str(item) for item in (approve_keywords or [])]
+        reject_words = [str(item) for item in (reject_keywords or [])]
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO group_management_settings(
-                    bot_id, manual_approval_enabled, auto_approval_enabled, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    bot_id, manual_approval_enabled, auto_approval_enabled,
+                    keyword_approve_enabled, keyword_reject_enabled,
+                    approve_keywords, reject_keywords, reject_reason, reject_blacklist, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     manual_approval_enabled=excluded.manual_approval_enabled,
                     auto_approval_enabled=excluded.auto_approval_enabled,
+                    keyword_approve_enabled=excluded.keyword_approve_enabled,
+                    keyword_reject_enabled=excluded.keyword_reject_enabled,
+                    approve_keywords=excluded.approve_keywords,
+                    reject_keywords=excluded.reject_keywords,
+                    reject_reason=excluded.reject_reason,
+                    reject_blacklist=excluded.reject_blacklist,
                     updated_at=excluded.updated_at""",
-                (bot_id, int(manual_approval_enabled), int(auto_approval_enabled), utc_now()),
+                (
+                    bot_id,
+                    int(bool(manual_approval_enabled)),
+                    int(bool(auto_approval_enabled)),
+                    int(bool(keyword_approve_enabled)),
+                    int(bool(keyword_reject_enabled)),
+                    json.dumps(approve_words, ensure_ascii=False),
+                    json.dumps(reject_words, ensure_ascii=False),
+                    str(reject_reason or ""),
+                    int(bool(reject_blacklist)),
+                    utc_now(),
+                ),
             )
         return self.get_settings(bot_id)
 

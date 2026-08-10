@@ -52,6 +52,12 @@ const muteDuration = ref('60')
 const muteCustomEnd = ref('')
 const manualApprovalEnabled = ref(true)
 const autoApprovalEnabled = ref(true)
+const keywordApproveEnabled = ref(false)
+const keywordRejectEnabled = ref(false)
+const approveKeywordsText = ref('')
+const rejectKeywordsText = ref('')
+const keywordRejectReason = ref('')
+const keywordRejectBlacklist = ref(false)
 
 const pendingCount = computed(() => status.value?.join_requests.filter(item => item.status === 'pending').length || 0)
 const eventStateClass = computed(() => status.value?.requirements_ready ? 'ready' : 'warn')
@@ -64,6 +70,24 @@ const knownMuteMembers = computed(() => (status.value?.known_members || []).filt
 
 function splitValues(value: string): string[] {
   return [...new Set(value.split(/[\s,，;；]+/).map(item => item.trim()).filter(Boolean))]
+}
+
+function splitKeywordLines(value: string): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const part of value.split(/[\n,，;；]+/)) {
+    const word = part.trim()
+    if (!word) continue
+    const key = word.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(word)
+  }
+  return result
+}
+
+function formatKeywords(words?: string[] | null): string {
+  return (words || []).join('\n')
 }
 
 function shortId(value: string): string {
@@ -124,6 +148,12 @@ async function loadStatus() {
     status.value = await api.groupManagementStatus(botId.value)
     manualApprovalEnabled.value = status.value.settings.manual_approval_enabled
     autoApprovalEnabled.value = status.value.settings.auto_approval_enabled
+    keywordApproveEnabled.value = !!status.value.settings.keyword_approve_enabled
+    keywordRejectEnabled.value = !!status.value.settings.keyword_reject_enabled
+    approveKeywordsText.value = formatKeywords(status.value.settings.approve_keywords)
+    rejectKeywordsText.value = formatKeywords(status.value.settings.reject_keywords)
+    keywordRejectReason.value = status.value.settings.reject_reason || ''
+    keywordRejectBlacklist.value = !!status.value.settings.reject_blacklist
     if (!selectedGroup.value && status.value.groups.length) selectedGroup.value = status.value.groups[0].group_openid
     if (!muteGroup.value && status.value.groups.length) muteGroup.value = status.value.groups[0].group_openid
   } catch (e) {
@@ -418,7 +448,19 @@ async function saveFeatureSwitches() {
     status.value = await api.updateGroupManagementSettings(botId.value, {
       manual_approval_enabled: manualApprovalEnabled.value,
       auto_approval_enabled: autoApprovalEnabled.value,
+      keyword_approve_enabled: keywordApproveEnabled.value,
+      keyword_reject_enabled: keywordRejectEnabled.value,
+      approve_keywords: splitKeywordLines(approveKeywordsText.value),
+      reject_keywords: splitKeywordLines(rejectKeywordsText.value),
+      reject_reason: keywordRejectReason.value.trim(),
+      reject_blacklist: keywordRejectBlacklist.value,
     })
+    keywordApproveEnabled.value = !!status.value.settings.keyword_approve_enabled
+    keywordRejectEnabled.value = !!status.value.settings.keyword_reject_enabled
+    approveKeywordsText.value = formatKeywords(status.value.settings.approve_keywords)
+    rejectKeywordsText.value = formatKeywords(status.value.settings.reject_keywords)
+    keywordRejectReason.value = status.value.settings.reject_reason || ''
+    keywordRejectBlacklist.value = !!status.value.settings.reject_blacklist
     message.value = '审批方式开关已保存。'
   } catch (e) {
     error.value = e instanceof Error ? e.message : '保存审批开关失败'
@@ -495,6 +537,22 @@ onMounted(async () => {
           <label class="switch-card"><input v-model="manualApprovalEnabled" type="checkbox"><span><b>人工审批</b><small>保留通过、拒绝、拒绝并拉黑</small></span></label>
           <label class="switch-card"><input v-model="autoApprovalEnabled" type="checkbox"><span><b>白名单自动审批</b><small>使用QQ官方策略和真实QQ号白名单</small></span></label>
           <button class="btn primary" :disabled="busy === 'feature-switches'" @click="saveFeatureSwitches">保存开关</button>
+        </section>
+
+        <section class="card panel keyword-rules">
+          <div>
+            <h2 class="section-title">关键词自动审批</h2>
+            <p class="section-sub">根据申请人填写的验证消息与问答答案本地自动通过/拒绝；与上方「白名单自动审批」（官方 QQ 号策略）互不影响。同时命中时拒绝优先。</p>
+          </div>
+          <div class="keyword-grid">
+            <label class="switch-card"><input v-model="keywordApproveEnabled" type="checkbox"><span><b>关键词自动通过</b><small>命中通过词则官方 approve</small></span></label>
+            <label class="switch-card"><input v-model="keywordRejectEnabled" type="checkbox"><span><b>关键词自动拒绝</b><small>开启时必须填写拒绝理由</small></span></label>
+            <label class="field"><span>通过关键词</span><textarea v-model="approveKeywordsText" class="input" rows="4" placeholder="每行一个，或用逗号分隔"></textarea></label>
+            <label class="field"><span>拒绝关键词</span><textarea v-model="rejectKeywordsText" class="input" rows="4" placeholder="每行一个，或用逗号分隔"></textarea></label>
+            <label class="field keyword-reason"><span>拒绝理由</span><input v-model="keywordRejectReason" class="input" maxlength="200" :required="keywordRejectEnabled" placeholder="开启自动拒绝时必填"></label>
+            <label class="check keyword-blacklist"><input v-model="keywordRejectBlacklist" type="checkbox">拒绝时加入群黑名单</label>
+          </div>
+          <button class="btn primary" :disabled="busy === 'feature-switches'" @click="saveFeatureSwitches">保存关键词规则</button>
         </section>
         <section class="card panel sync-panel">
           <div><h2 class="section-title">同步指定群的申请</h2><p class="section-sub">后台每 60 秒自动拉取全部已识别群的申请列表；事件到达会即时入库。这里的手动同步用于立刻补拉当前选中群。</p></div>
@@ -596,5 +654,5 @@ onMounted(async () => {
 
 <style scoped>
 .management-page{max-width:1280px}.empty,.loading{padding:32px}.toolbar{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:16px}.bot-picker{width:min(500px,100%)}.event-state{display:flex;align-items:center;gap:14px;padding:10px 12px;border-radius:13px;background:var(--bg-sunken)}.event-state div strong,.event-state div small{display:block}.event-state small{margin-top:3px;color:var(--ink-4);font-size:10px}.event-state.ready strong{color:#238541}.event-state.warn strong{color:var(--warn)}.tabs{display:flex;gap:6px;margin-bottom:18px;padding:5px;border:1px solid var(--line);border-radius:15px;background:white;width:max-content;max-width:100%;overflow:auto}.tabs button{padding:9px 13px;border-radius:10px;color:var(--ink-3);font-size:12px;font-weight:700;white-space:nowrap}.tabs button.active{background:var(--accent-soft);color:var(--accent)}.tabs span{margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(0,0,0,.06)}.panel{padding:22px;margin-bottom:18px}.sync-panel{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(360px,1.2fr);gap:18px;align-items:end}.inline-form{display:flex;gap:9px}.inline-form .input{flex:1}.group-chips{grid-column:1/-1;display:flex;gap:7px;flex-wrap:wrap}.group-chips button{padding:5px 9px;border:1px solid var(--line);border-radius:999px;color:var(--ink-3);font-size:10px}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.filters{display:flex;gap:5px}.filters button,.mini{padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink-3);font-size:10.5px}.filters button.active{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent)}.empty-row{padding:30px 0;text-align:center;color:var(--ink-4);font-size:12px}.request-card{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:18px;padding:18px 0;border-top:1px solid var(--line)}.request-title{display:flex;align-items:center;gap:8px}.request-title strong{font-size:14px}.state{padding:3px 7px;border-radius:999px;font-size:9px;font-weight:750}.state.pending{background:rgba(255,149,0,.12);color:var(--warn)}.state.approved,.state.auto_approved{background:rgba(52,199,89,.12);color:#238541}.state.declined{background:rgba(255,59,48,.1);color:var(--danger)}.request-main>small{display:block;margin-top:5px;color:var(--ink-4);font-size:10px}.risk,.answer,.auto-note{margin-top:11px;padding:10px;border-radius:10px;background:var(--bg-sunken);font-size:11px;line-height:1.55}.risk{background:rgba(255,149,0,.09);color:#815500}.risk strong,.answer span,.answer strong{display:block}.answer span{color:var(--ink-4);font-size:10px}.answer strong{margin-top:3px}.auto-note{color:#238541}.decision-box{display:flex;flex-direction:column;gap:8px}.decision-box details{padding:9px;border:1px solid var(--line);border-radius:11px}.decision-box summary{cursor:pointer;color:var(--danger);font-size:11px;font-weight:700}.decision-box details .input,.decision-box details .check,.decision-box details .btn{margin-top:9px;width:100%}.check{display:flex;align-items:center;gap:7px;font-size:11px}.check input{accent-color:var(--accent)}.two-column{display:grid;grid-template-columns:1fr 1fr;gap:18px}.mode-cards{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:16px 0}.mode-cards label{padding:12px;border:1px solid var(--line);border-radius:11px}.mode-cards label.selected{border-color:var(--accent-border);background:var(--accent-soft)}.mode-cards input{display:none}.mode-cards b,.mode-cards span{display:block}.mode-cards b{font-size:12px}.mode-cards span{margin-top:4px;color:var(--ink-4);font-size:9.5px;line-height:1.4}.textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:white;color:var(--ink);font:inherit;line-height:1.5}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field small{display:block;margin-top:5px;color:var(--ink-4);font-size:9.5px}.standalone{margin:13px 0}.full{width:100%;justify-content:center}.strategy-list{margin-top:18px}.strategy-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:16px 0;border-top:1px solid var(--line)}.strategy-info>div{display:flex;align-items:center;gap:8px}.strategy-info span{padding:3px 6px;border-radius:999px;font-size:9px}.strategy-info span.on{background:rgba(52,199,89,.12);color:#238541}.strategy-info span.off{background:rgba(60,60,67,.08);color:var(--ink-4)}.strategy-info small,.strategy-info p{display:block;margin:5px 0 0;color:var(--ink-4);font-size:10px}.strategy-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.primary-text{color:var(--accent)!important}.danger-text{color:var(--danger)!important}.group-editor{grid-column:1/-1;display:flex;flex-direction:column;gap:12px;padding:12px;border-radius:11px;background:var(--bg-sunken)}.editor-details{display:grid;grid-template-columns:1fr 260px auto;gap:8px;align-items:end}.editor-groups{display:grid;grid-template-columns:170px 180px 1fr auto;gap:8px;align-items:start}.mute-form .inline-form{margin-top:16px}.mute-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.mute-members{margin-bottom:14px}.mode-pill{padding:5px 8px;border-radius:999px;background:var(--bg-sunken);color:var(--ink-3);font-size:10px}.mute-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--line)}.mute-row strong,.mute-row small{display:block}.mute-row small{margin-top:4px;color:var(--ink-4);font-size:10px}.mute-row>div:last-child{display:flex;gap:6px}.legacy-panel p{max-width:700px;margin:10px 0 16px;color:var(--ink-3);font-size:12px;line-height:1.7}.notice{position:sticky;bottom:14px;z-index:10;margin:14px 0 0;padding:12px 14px;border-radius:12px;box-shadow:var(--shadow-sm);font-size:12px}.notice.ok{background:#eaf8ee;color:#237b3b}.notice.error{background:#fff0ef;color:var(--danger)}@media(max-width:900px){.sync-panel,.two-column{grid-template-columns:1fr}.editor-details,.editor-groups{grid-template-columns:1fr 1fr}.editor-groups .textarea,.editor-groups .btn{grid-column:1/-1}.mute-fields{grid-template-columns:1fr 1fr}.toolbar{align-items:stretch;flex-direction:column}.event-state{justify-content:space-between}}@media(max-width:650px){.tabs{width:100%}.request-card,.strategy-card{grid-template-columns:1fr}.decision-box{max-width:none}.strategy-actions{justify-content:flex-start}.inline-form{flex-direction:column}.mode-cards,.form-grid,.mute-fields,.editor-details,.editor-groups{grid-template-columns:1fr}.sync-panel{display:block}.sync-panel>div+div{margin-top:14px}.group-chips{margin-top:12px}}
-.feature-switches{display:grid;grid-template-columns:minmax(240px,1fr) repeat(2,minmax(180px,.7fr)) auto;gap:12px;align-items:center}.switch-card,.group-select-list label{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg-sunken)}.switch-card input,.group-select-list input{accent-color:var(--accent)}.switch-card span,.switch-card b,.switch-card small,.group-select-list span,.group-select-list b,.group-select-list small{display:block}.switch-card small,.group-select-list small{margin-top:4px;color:var(--ink-4);font-size:9.5px}.group-select-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}.legacy-note{color:var(--ink-4);font-size:10.5px}.select[multiple]{min-height:110px}@media(max-width:1000px){.feature-switches{grid-template-columns:1fr 1fr}.feature-switches>div{grid-column:1/-1}}@media(max-width:650px){.feature-switches,.group-select-list{grid-template-columns:1fr}}
+.feature-switches{display:grid;grid-template-columns:minmax(240px,1fr) repeat(2,minmax(180px,.7fr)) auto;gap:12px;align-items:center}.switch-card,.group-select-list label{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg-sunken)}.switch-card input,.group-select-list input{accent-color:var(--accent)}.switch-card span,.switch-card b,.switch-card small,.group-select-list span,.group-select-list b,.group-select-list small{display:block}.switch-card small,.group-select-list small{margin-top:4px;color:var(--ink-4);font-size:9.5px}.group-select-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}.legacy-note{color:var(--ink-4);font-size:10.5px}.select[multiple]{min-height:110px}.keyword-rules{display:flex;flex-direction:column;gap:14px}.keyword-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}.keyword-grid .field span{display:block;margin-bottom:6px;color:var(--ink-3);font-size:11px;font-weight:700}.keyword-grid textarea.input{width:100%;resize:vertical;min-height:96px;line-height:1.5}.keyword-reason{grid-column:1/-1}.keyword-blacklist{align-self:center}@media(max-width:1000px){.feature-switches{grid-template-columns:1fr 1fr}.feature-switches>div{grid-column:1/-1}}@media(max-width:650px){.feature-switches,.group-select-list,.keyword-grid{grid-template-columns:1fr}}
 </style>

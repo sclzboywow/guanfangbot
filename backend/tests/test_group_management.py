@@ -102,7 +102,10 @@ def test_sync_uses_query_pagination_and_records_requests(tmp_path: Path) -> None
     ])
     service, repository = service_with_client(tmp_path / "management.db", client)
     result = asyncio.run(service.sync_join_requests("bot-1", "group-1"))
-    assert result == {"synced": 1, "pages": 2, "truncated": False}
+    assert result["synced"] == 1
+    assert result["pages"] == 2
+    assert result["truncated"] is False
+    assert result["keyword"] == {"checked": 0, "approved": 0, "declined": 0, "failed": 0}
     assert client.requests[0][2] == {"limit": "100"}
     assert client.requests[1][2] == {"limit": "100", "cursor": "next"}
     assert repository.list_join_requests("bot-1")[0]["group_openid"] == "group-1"
@@ -313,3 +316,159 @@ def test_scheduled_poll_syncs_all_remembered_groups_quietly(tmp_path: Path) -> N
     actions = [item["action"] for item in repository.list_logs("bot-1")]
     assert "sync_join_requests" not in actions
     assert "scheduled_join_request_poll" in actions
+
+
+def _pending_request(verify_info: dict) -> dict:
+    return {
+        "group_openid": "group-1",
+        "join_request_id": "request-kw",
+        "member_openid": "member-1",
+        "username": "申请人",
+        "verify_info": verify_info,
+    }
+
+
+def test_keyword_auto_approve_on_answer_hit(tmp_path: Path) -> None:
+    client = FakeClient()
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.update_settings(
+        "bot-1",
+        manual_approval_enabled=False,
+        auto_approval_enabled=True,
+        keyword_approve_enabled=True,
+        approve_keywords=["你好", "通过"],
+    )
+    request = repository.upsert_join_request(
+        "bot-1",
+        _pending_request({
+            "verify_message": "",
+            "review_qa_list": [{"question": "群满 进450654168", "answer": "你好世界"}],
+        }),
+        source="test",
+    )
+    result = asyncio.run(service.apply_keyword_rules("bot-1", request))
+    assert result == {"decision": "approve", "matched": ["你好"]}
+    assert client.requests[0][3]["op"] == "approve"
+    assert repository.list_join_requests("bot-1")[0]["status"] == "approved"
+    assert repository.list_logs("bot-1")[0]["action"] == "keyword_auto_approve"
+    assert "matched=你好" in repository.list_logs("bot-1")[0]["detail"]
+
+
+def test_keyword_auto_decline_uses_reject_reason(tmp_path: Path) -> None:
+    client = FakeClient()
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.update_settings(
+        "bot-1",
+        manual_approval_enabled=True,
+        auto_approval_enabled=True,
+        keyword_reject_enabled=True,
+        reject_keywords=["广告", "引流"],
+        reject_reason="验证内容不合规",
+        reject_blacklist=False,
+    )
+    request = repository.upsert_join_request(
+        "bot-1",
+        _pending_request({"verify_message": "我来做广告推广", "review_qa_list": []}),
+        source="test",
+    )
+    result = asyncio.run(service.apply_keyword_rules("bot-1", request))
+    assert result == {"decision": "decline", "matched": ["广告"]}
+    body = client.requests[0][3]
+    assert body["op"] == "decline"
+    assert body["reject_reason"] == "验证内容不合规"
+    assert body["add_to_member_blacklist"] is False
+    assert repository.list_join_requests("bot-1")[0]["status"] == "declined"
+    assert repository.list_logs("bot-1")[0]["action"] == "keyword_auto_decline"
+
+
+def test_keyword_conflict_prefers_reject(tmp_path: Path) -> None:
+    client = FakeClient()
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.update_settings(
+        "bot-1",
+        manual_approval_enabled=True,
+        auto_approval_enabled=True,
+        keyword_approve_enabled=True,
+        keyword_reject_enabled=True,
+        approve_keywords=["你好"],
+        reject_keywords=["广告"],
+        reject_reason="拒绝优先",
+    )
+    request = repository.upsert_join_request(
+        "bot-1",
+        _pending_request({"verify_message": "你好，我做广告", "review_qa_list": []}),
+        source="test",
+    )
+    result = asyncio.run(service.apply_keyword_rules("bot-1", request))
+    assert result["decision"] == "decline"
+    assert result["matched"] == ["广告"]
+    assert client.requests[0][3]["op"] == "decline"
+
+
+def test_keyword_rules_disabled_leave_pending(tmp_path: Path) -> None:
+    client = FakeClient()
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.update_settings(
+        "bot-1",
+        manual_approval_enabled=True,
+        auto_approval_enabled=True,
+        keyword_approve_enabled=False,
+        keyword_reject_enabled=False,
+        approve_keywords=["你好"],
+        reject_keywords=["广告"],
+        reject_reason="不会用到",
+    )
+    request = repository.upsert_join_request(
+        "bot-1",
+        _pending_request({"verify_message": "你好广告", "review_qa_list": []}),
+        source="test",
+    )
+    assert asyncio.run(service.apply_keyword_rules("bot-1", request)) is None
+    assert client.requests == []
+    assert repository.list_join_requests("bot-1")[0]["status"] == "pending"
+
+
+def test_keyword_reject_schema_requires_reason() -> None:
+    from pydantic import ValidationError
+
+    from app.models.schemas import GroupManagementSettingsUpdate
+
+    with pytest.raises(ValidationError):
+        GroupManagementSettingsUpdate(
+            keyword_reject_enabled=True,
+            reject_reason="",
+            reject_keywords=["广告"],
+        )
+    ok = GroupManagementSettingsUpdate(
+        keyword_reject_enabled=True,
+        reject_reason="不合规",
+        reject_keywords=[" 广告 ", "广告", ""],
+        approve_keywords=["你好"],
+    )
+    assert ok.reject_keywords == ["广告"]
+    assert ok.reject_reason == "不合规"
+
+
+def test_keyword_does_not_match_admin_question_or_nickname(tmp_path: Path) -> None:
+    client = FakeClient()
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.update_settings(
+        "bot-1",
+        manual_approval_enabled=True,
+        auto_approval_enabled=True,
+        keyword_approve_enabled=True,
+        approve_keywords=["群满", "申请人"],
+    )
+    request = repository.upsert_join_request(
+        "bot-1",
+        {
+            **_pending_request({
+                "verify_message": "随便",
+                "review_qa_list": [{"question": "群满 进450654168", "answer": "ok"}],
+            }),
+            "username": "申请人",
+        },
+        source="test",
+    )
+    assert asyncio.run(service.apply_keyword_rules("bot-1", request)) is None
+    assert client.requests == []
