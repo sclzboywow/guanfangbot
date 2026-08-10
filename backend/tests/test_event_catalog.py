@@ -8,18 +8,19 @@ from app.services.bot_repository import BotRepository
 from app.services.event_catalog import EVENT_CODE_SET, EVENT_GROUPS
 
 
-def test_complete_event_catalog_has_43_unique_events() -> None:
+def test_complete_event_catalog_has_44_unique_events() -> None:
     codes = [
         event["code"]
         for group in EVENT_GROUPS
         for event in group["events"]
     ]
-    assert len(codes) == 43
-    assert len(set(codes)) == 43
+    assert len(codes) == 44
+    assert len(set(codes)) == 44
     assert set(codes) == EVENT_CODE_SET
     assert {
         "C2C_MESSAGE_CREATE",
         "GROUP_MESSAGE_CREATE",
+        "GROUP_JOIN_REQUEST",
         "SUBSCRIBE_MESSAGE_STATUS",
         "OPEN_FORUM_THREAD_CREATE",
         "AUDIO_OFF_MIC",

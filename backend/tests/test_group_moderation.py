@@ -87,6 +87,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.retracted: list[tuple[str, str]] = []
         self.sent: list[tuple[str, str]] = []
+        self.requests: list[tuple[str, str, object]] = []
 
     async def retract_group_message(self, group_openid: str, message_id: str):
         self.retracted.append((group_openid, message_id))
@@ -94,6 +95,10 @@ class FakeClient:
 
     async def send_group_text(self, group_openid: str, content: str, **_kwargs):
         self.sent.append((group_openid, content))
+        return {"status_code": 200, "data": {}}
+
+    async def request(self, method: str, path: str, query, body):
+        self.requests.append((method, path, body))
         return {"status_code": 200, "data": {}}
 
 
@@ -152,6 +157,8 @@ def test_violation_warns_and_blocks_following_messages(tmp_path: Path) -> None:
     assert member["permanent"] is False
     assert len(client.retracted) == 1
     assert len(client.sent) == 1
+    assert len(client.requests) == 1
+    assert client.requests[0][2]["members"][0]["op"] == "add"
     assert "\n" not in client.sent[0][1]
     assert "10分钟" in client.sent[0][1]
 
@@ -181,7 +188,7 @@ def test_repeated_advertising_reaches_permanent_stage(tmp_path: Path) -> None:
     assert member["strike_count"] == 5
     assert member["permanent"] is True
     assert len(client.retracted) == 5
-    assert "永久" in client.sent[-1][1]
+    assert "长期治理" in client.sent[-1][1]
 
 
 def test_duplicate_message_is_processed_once(tmp_path: Path) -> None:

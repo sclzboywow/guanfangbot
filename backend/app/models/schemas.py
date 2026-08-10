@@ -132,6 +132,138 @@ class GroupVerificationSettingsUpdate(BaseModel):
         return self
 
 
+class OfficialJoinDecision(BaseModel):
+    group_openid: str = Field(min_length=1, max_length=128)
+    member_openid: str = Field(min_length=1, max_length=128)
+    join_request_id: str = Field(min_length=1, max_length=2048)
+    op: Literal["approve", "decline"]
+    reject_reason: str = Field(default="", max_length=200)
+    add_to_member_blacklist: bool = False
+
+    @field_validator("group_openid", "member_openid", "join_request_id")
+    @classmethod
+    def clean_official_ids(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or any(char.isspace() for char in cleaned):
+            raise ValueError("标识不能为空或包含空格")
+        return cleaned
+
+    @field_validator("reject_reason")
+    @classmethod
+    def clean_reject_reason(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class OfficialMuteMember(BaseModel):
+    op: Literal["add", "update", "del"]
+    member_openid: str = Field(min_length=1, max_length=128)
+    mute_expire_at: str = Field(default="", max_length=64)
+
+    @field_validator("member_openid")
+    @classmethod
+    def clean_mute_member(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or any(char.isspace() for char in cleaned):
+            raise ValueError("成员 OpenID 格式不正确")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_expiry(self) -> "OfficialMuteMember":
+        self.mute_expire_at = self.mute_expire_at.strip()
+        if self.op != "del" and not self.mute_expire_at:
+            raise ValueError("新增或修改禁言时必须选择结束时间")
+        return self
+
+
+class OfficialMuteUpdate(BaseModel):
+    group_openid: str = Field(min_length=1, max_length=128)
+    members: list[OfficialMuteMember] = Field(min_length=1, max_length=10)
+
+    @field_validator("group_openid")
+    @classmethod
+    def clean_mute_group(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or any(char.isspace() for char in cleaned):
+            raise ValueError("群 OpenID 格式不正确")
+        return cleaned
+
+
+class ApprovalStrategyCreate(BaseModel):
+    group_mode: Literal["group_openids", "group_ids"] = "group_openids"
+    groups: list[str] = Field(min_length=1, max_length=100)
+    is_enable: Literal["on", "off"] = "on"
+    expire_at: str | None = Field(default=None, max_length=64)
+    remark: str = Field(default="", max_length=255)
+
+    @field_validator("groups")
+    @classmethod
+    def clean_strategy_groups(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if not cleaned:
+            raise ValueError("请至少填写一个群")
+        if any(any(char.isspace() for char in item) for item in cleaned):
+            raise ValueError("群标识不能包含空格")
+        return cleaned
+
+    @field_validator("remark")
+    @classmethod
+    def clean_strategy_remark(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @model_validator(mode="after")
+    def validate_group_id_mode(self) -> "ApprovalStrategyCreate":
+        if self.group_mode == "group_ids" and any(not item.isdigit() for item in self.groups):
+            raise ValueError("QQ群号只能填写数字")
+        if self.expire_at is not None:
+            self.expire_at = self.expire_at.strip() or None
+        return self
+
+
+class ApprovalGroupAction(BaseModel):
+    op: Literal["add", "del"]
+    group_mode: Literal["group_openids", "group_ids"]
+    groups: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("groups")
+    @classmethod
+    def clean_group_action_values(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+    @model_validator(mode="after")
+    def validate_group_action_mode(self) -> "ApprovalGroupAction":
+        if not self.groups:
+            raise ValueError("请填写需要增删的群")
+        if self.group_mode == "group_ids" and any(not item.isdigit() for item in self.groups):
+            raise ValueError("QQ群号只能填写数字")
+        return self
+
+
+class ApprovalStrategyUpdate(BaseModel):
+    is_enable: Literal["on", "off"] | None = None
+    expire_at: str | None = Field(default=None, max_length=64)
+    remark: str | None = Field(default=None, max_length=255)
+    group_action: ApprovalGroupAction | None = None
+
+    @model_validator(mode="after")
+    def require_strategy_change(self) -> "ApprovalStrategyUpdate":
+        if self.is_enable is None and self.expire_at is None and self.remark is None and self.group_action is None:
+            raise ValueError("请至少修改一项策略内容")
+        return self
+
+
+class ApprovalWhitelistUpdate(BaseModel):
+    op: Literal["add", "del"]
+    whitelist_users: list[str] = Field(min_length=1, max_length=100000)
+
+    @field_validator("whitelist_users")
+    @classmethod
+    def validate_qq_numbers(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if not cleaned or any(not item.isdigit() for item in cleaned):
+            raise ValueError("白名单只能填写QQ号码，每行一个或使用逗号分隔")
+        return cleaned
+
+
 class GroupModerationSettingsUpdate(BaseModel):
     enabled: bool = False
     detect_mobile: bool = True
@@ -140,6 +272,7 @@ class GroupModerationSettingsUpdate(BaseModel):
     detect_content_keywords: bool = True
     detect_nickname_keywords: bool = True
     exempt_admins: bool = True
+    use_official_mute: bool = True
     retract_merged_messages: bool = False
     retract_group_cards: bool = False
     penalty_minutes: list[int] = Field(default_factory=lambda: list(DEFAULT_PENALTY_MINUTES), min_length=1, max_length=8)

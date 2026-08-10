@@ -12,6 +12,7 @@ from app.routers import (
     bots,
     chat,
     events,
+    group_management,
     group_moderation,
     group_verification,
     library_delivery,
@@ -91,6 +92,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(bots.router, prefix="/api")
 app.include_router(qqbot.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
+app.include_router(group_management.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(group_verification.router, prefix="/api")

@@ -62,6 +62,7 @@ class GroupModerationRepository:
                     detect_content_keywords INTEGER NOT NULL DEFAULT 1,
                     detect_nickname_keywords INTEGER NOT NULL DEFAULT 1,
                     exempt_admins INTEGER NOT NULL DEFAULT 1,
+                    use_official_mute INTEGER NOT NULL DEFAULT 1,
                     penalty_minutes TEXT NOT NULL,
                     permanent_after INTEGER NOT NULL DEFAULT 5,
                     escalation_cooldown_seconds INTEGER NOT NULL DEFAULT 60,
@@ -133,6 +134,10 @@ class GroupModerationRepository:
                 connection.execute(
                     "ALTER TABLE moderation_settings ADD COLUMN retract_group_cards INTEGER NOT NULL DEFAULT 0"
                 )
+            if "use_official_mute" not in columns:
+                connection.execute(
+                    "ALTER TABLE moderation_settings ADD COLUMN use_official_mute INTEGER NOT NULL DEFAULT 1"
+                )
 
     @staticmethod
     def _settings_dict(row: sqlite3.Row | None, bot_id: str) -> dict[str, Any]:
@@ -146,6 +151,7 @@ class GroupModerationRepository:
                 "detect_content_keywords": True,
                 "detect_nickname_keywords": True,
                 "exempt_admins": True,
+                "use_official_mute": True,
                 "retract_merged_messages": False,
                 "retract_group_cards": False,
                 "penalty_minutes": list(DEFAULT_PENALTY_MINUTES),
@@ -160,7 +166,7 @@ class GroupModerationRepository:
         for key in (
             "enabled", "detect_mobile", "detect_landline", "detect_wechat",
             "detect_content_keywords", "detect_nickname_keywords", "exempt_admins",
-            "retract_merged_messages", "retract_group_cards",
+            "retract_merged_messages", "retract_group_cards", "use_official_mute",
         ):
             data[key] = bool(data.get(key, 0))
         data["penalty_minutes"] = [int(v) for v in _json_list(data.get("penalty_minutes"), DEFAULT_PENALTY_MINUTES)]
@@ -183,10 +189,11 @@ class GroupModerationRepository:
                 INSERT INTO moderation_settings (
                     bot_id, enabled, detect_mobile, detect_landline, detect_wechat,
                     detect_content_keywords, detect_nickname_keywords, exempt_admins,
-                    retract_merged_messages, retract_group_cards, penalty_minutes, permanent_after,
+                    retract_merged_messages, retract_group_cards, use_official_mute,
+                    penalty_minutes, permanent_after,
                     escalation_cooldown_seconds, warning_cooldown_seconds, content_keywords,
                     nickname_keywords, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bot_id) DO UPDATE SET
                     enabled = excluded.enabled,
                     detect_mobile = excluded.detect_mobile,
@@ -197,6 +204,7 @@ class GroupModerationRepository:
                     exempt_admins = excluded.exempt_admins,
                     retract_merged_messages = excluded.retract_merged_messages,
                     retract_group_cards = excluded.retract_group_cards,
+                    use_official_mute = excluded.use_official_mute,
                     penalty_minutes = excluded.penalty_minutes,
                     permanent_after = excluded.permanent_after,
                     escalation_cooldown_seconds = excluded.escalation_cooldown_seconds,
@@ -210,7 +218,7 @@ class GroupModerationRepository:
                     int(bool(current["detect_landline"])), int(bool(current["detect_wechat"])),
                     int(bool(current["detect_content_keywords"])), int(bool(current["detect_nickname_keywords"])),
                     int(bool(current["exempt_admins"])), int(bool(current["retract_merged_messages"])),
-                    int(bool(current["retract_group_cards"])),
+                    int(bool(current["retract_group_cards"])), int(bool(current["use_official_mute"])),
                     json.dumps(current["penalty_minutes"], ensure_ascii=False),
                     int(current["permanent_after"]), int(current["escalation_cooldown_seconds"]),
                     int(current["warning_cooldown_seconds"]), json.dumps(current["content_keywords"], ensure_ascii=False),

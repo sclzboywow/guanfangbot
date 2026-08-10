@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 from app.services.group_moderation_repository import GroupModerationRepository, group_moderation_repository
 from app.services.group_verification_repository import group_verification_repository
@@ -179,6 +180,42 @@ class GroupModerationService:
         self.repository = repository
         self._client_provider = client_provider or client_manager.get
 
+    async def set_official_mute(
+        self,
+        bot_id: str,
+        group_openid: str,
+        member_openid: str,
+        *,
+        op: str,
+        mute_expire_at: str = "",
+        member_id: str | None = None,
+        rule: str = "manual",
+    ) -> dict[str, Any]:
+        client = await self._client_provider(bot_id)
+        item: dict[str, Any] = {"op": op, "member_openid": member_openid}
+        if op != "del":
+            item["mute_expire_at"] = mute_expire_at
+        result = await client.request(
+            "POST",
+            f"/v2/groups/{quote(group_openid, safe='')}/restrict_chat_setting",
+            None,
+            {"members": [item]},
+        )
+        status_code = int(result.get("status_code", 0)) or None
+        success = status_code is not None and 200 <= status_code < 300
+        self.repository.add_log(
+            bot_id=bot_id,
+            member_id=member_id,
+            group_openid=group_openid,
+            member_openid=member_openid,
+            action="official_unmute" if op == "del" else "official_mute",
+            rule=rule,
+            success=success,
+            status_code=status_code,
+            detail=str(result.get("data", "")),
+        )
+        return result
+
     async def handle_event(self, bot_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if event_type != "GROUP_MESSAGE_CREATE":
             return
@@ -259,6 +296,7 @@ class GroupModerationService:
                 level = permanent_after if permanent else min(strike_count, max(1, len(durations)))
                 if permanent:
                     blocked_until = None
+                    penalty_minutes = durations[-1] if durations else 10080
                 else:
                     penalty_minutes = durations[min(strike_count - 1, len(durations) - 1)] if durations else 10
                     blocked_until = (now + timedelta(minutes=penalty_minutes)).isoformat()
@@ -287,13 +325,38 @@ class GroupModerationService:
             success=success, status_code=status_code, detail=detail,
         )
 
+        official_mute_success = False
+        if settings.get("use_official_mute", True) and (penalty_applied or permanent):
+            if permanent:
+                renewal_minutes = int(penalty_minutes or 10080)
+                official_expiry = (now + timedelta(minutes=renewal_minutes)).isoformat()
+            else:
+                official_expiry = str(member.get("blocked_until") or "")
+            if official_expiry:
+                mute_result = await self.set_official_mute(
+                    bot_id,
+                    group_openid,
+                    member_openid,
+                    op="add",
+                    mute_expire_at=official_expiry,
+                    member_id=str(member["id"]),
+                    rule=detection.rule if detection else str(member.get("last_rule") or "active_penalty"),
+                )
+                mute_code = int(mute_result.get("status_code", 0)) or None
+                official_mute_success = mute_code is not None and 200 <= mute_code < 300
+
         if detection is not None and penalty_applied:
             last_warning = parse_time(member.get("last_warning_at"))
             warning_cooldown = int(settings.get("warning_cooldown_seconds", 30))
             if last_warning is None or (now - last_warning).total_seconds() >= warning_cooldown:
                 label = member_name.strip() or "该成员"
-                period = duration_text(penalty_minutes, permanent)
-                warning = single_line(f"警告：{label}触发群广告治理，当前{period}内发送的所有消息将自动撤回。")
+                period = duration_text(penalty_minutes, False)
+                if settings.get("use_official_mute", True) and official_mute_success:
+                    prefix = "进入长期治理，" if permanent else ""
+                    warning = single_line(f"警告：{label}触发群广告治理，{prefix}已由QQ官方禁言{period}。")
+                else:
+                    period = duration_text(penalty_minutes, permanent)
+                    warning = single_line(f"警告：{label}触发群广告治理，当前{period}内发送的所有消息将自动撤回。")
                 warning_result = await client.send_group_text(group_openid, warning)
                 warning_code = int(warning_result.get("status_code", 0)) or None
                 warning_success = warning_code is not None and 200 <= warning_code < 300

@@ -6,6 +6,7 @@ import ApiConsoleView from '@/views/ApiConsoleView.vue'
 import ChatView from '@/views/ChatView.vue'
 import AiSettingsView from '@/views/AiSettingsView.vue'
 import GroupVerificationView from '@/views/GroupVerificationView.vue'
+import GroupManagementView from '@/views/GroupManagementView.vue'
 import GroupModerationView from '@/views/GroupModerationView.vue'
 import LibraryDeliveryView from '@/views/LibraryDeliveryView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -23,7 +24,9 @@ const router = createRouter({
     { path: '/chat', name: 'chat', component: ChatView },
     { path: '/ai', name: 'ai', component: AiSettingsView },
     { path: '/events', name: 'events', component: EventConfigView },
-    { path: '/group-verification', name: 'group-verification', component: GroupVerificationView },
+    { path: '/group-management', name: 'group-management', component: GroupManagementView },
+    { path: '/group-verification', redirect: to => ({ path: '/group-management', query: to.query }) },
+    { path: '/group-verification-legacy', name: 'group-verification-legacy', component: GroupVerificationView },
     { path: '/group-moderation', name: 'group-moderation', component: GroupModerationView },
     { path: '/library-delivery', name: 'library-delivery', component: LibraryDeliveryView },
     { path: '/api-console', name: 'api-console', component: ApiConsoleView },

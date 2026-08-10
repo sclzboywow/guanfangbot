@@ -27,6 +27,7 @@ EVENT_GROUPS: tuple[dict[str, Any], ...] = (
             {"code": "GROUP_DEL_ROBOT", "label": "群移除机器人", "description": "机器人被移出群聊", "permission": "special"},
             {"code": "GROUP_MEMBER_ADD", "label": "群用户添加", "description": "用户加入群聊", "permission": "platform"},
             {"code": "GROUP_MEMBER_REMOVE", "label": "群用户移除", "description": "用户离开群聊", "permission": "platform"},
+            {"code": "GROUP_JOIN_REQUEST", "label": "用户申请加群", "description": "用户提交入群申请或被自动审批", "permission": "special"},
             {"code": "GROUP_MSG_RECEIVE", "label": "群打开消息推送", "description": "群管理员打开消息推送", "permission": "special"},
             {"code": "GROUP_MSG_REJECT", "label": "群关闭消息推送", "description": "群管理员关闭消息推送", "permission": "special"},
             {"code": "SUBSCRIBE_MESSAGE_STATUS", "label": "订阅消息授权状态变更", "description": "订阅消息授权状态发生变化", "permission": "platform"},

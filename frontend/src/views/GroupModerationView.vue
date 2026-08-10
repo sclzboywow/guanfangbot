@@ -72,8 +72,8 @@ function isBlocked(member: GroupModerationMember) {
 
 function memberState(member: GroupModerationMember) {
   if (member.trusted) return '白名单'
-  if (member.permanent) return '永久撤回'
-  if (isBlocked(member)) return `撤回至 ${formatTime(member.blocked_until)}`
+  if (member.permanent) return '长期治理'
+  if (isBlocked(member)) return `${settings.value?.use_official_mute ? '禁言' : '撤回'}至 ${formatTime(member.blocked_until)}`
   return member.strike_count ? '处罚已结束' : '观察记录'
 }
 
@@ -118,6 +118,7 @@ async function save() {
       detect_content_keywords: settings.value.detect_content_keywords,
       detect_nickname_keywords: settings.value.detect_nickname_keywords,
       exempt_admins: settings.value.exempt_admins,
+      use_official_mute: settings.value.use_official_mute,
       retract_merged_messages: settings.value.retract_merged_messages,
       retract_group_cards: settings.value.retract_group_cards,
       penalty_minutes: parsePenaltyMinutes(),
@@ -174,7 +175,7 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h1 class="page-title">群消息治理</h1>
-        <p class="page-sub">识别广告联系方式和广告昵称，警告后按阶梯时长自动撤回该成员的所有群消息。</p>
+        <p class="page-sub">识别广告联系方式和广告昵称，撤回违规消息后优先调用QQ官方成员禁言。</p>
       </div>
       <div class="page-actions">
         <button class="btn" :disabled="loading || !botId" @click="load">刷新</button>
@@ -194,8 +195,8 @@ onMounted(async () => {
       <div v-if="status && settings" class="content">
         <div class="summary-grid">
           <section class="card summary"><span>治理状态</span><strong :class="settings.enabled ? 'good' : 'muted'">{{ settings.enabled ? '已启用' : '未启用' }}</strong><small>依赖 GROUP_MESSAGE_CREATE</small></section>
-          <section class="card summary"><span>当前撤回</span><strong>{{ status.counts.blocked }}</strong><small>包含限时与永久成员</small></section>
-          <section class="card summary"><span>永久治理</span><strong class="danger-text">{{ status.counts.permanent }}</strong><small>需后台手动解除</small></section>
+          <section class="card summary"><span>当前治理</span><strong>{{ status.counts.blocked }}</strong><small>{{ settings.use_official_mute ? '优先使用QQ官方禁言' : '兼容连续撤回模式' }}</small></section>
+          <section class="card summary"><span>长期治理</span><strong class="danger-text">{{ status.counts.permanent }}</strong><small>官方禁言到期后按规则续期</small></section>
           <section class="card summary"><span>白名单</span><strong>{{ status.counts.trusted }}</strong><small>不参与自动检测</small></section>
         </div>
 
@@ -214,6 +215,7 @@ onMounted(async () => {
                 <label><input v-model="settings.retract_merged_messages" type="checkbox"> 合并消息</label>
                 <label><input v-model="settings.retract_group_cards" type="checkbox"> 群名片</label>
                 <label><input v-model="settings.exempt_admins" type="checkbox"> 豁免群主和管理员</label>
+                <label><input v-model="settings.use_official_mute" type="checkbox"> 使用QQ官方禁言</label>
               </div>
               <div class="keyword-grid">
                 <div class="field"><label>消息广告词</label><textarea v-model="contentKeywordsText" class="textarea" rows="6" placeholder="每行或逗号分隔"></textarea></div>
@@ -223,18 +225,18 @@ onMounted(async () => {
 
             <section class="card panel">
               <h2 class="section-title">阶梯处罚</h2>
-              <p class="section-sub">默认 10 分钟 → 1 小时 → 24 小时 → 7 天 → 第 5 次永久。处罚期内普通发言只撤回；再次明确命中广告并超过升级冷却才加级。</p>
+              <p class="section-sub">默认 10 分钟 → 1 小时 → 24 小时 → 7 天 → 第 5 次长期治理。启用官方群禁言后，仅撤回触发消息，其余发言由QQ直接限制。</p>
               <div class="form-grid">
                 <div class="field wide"><label>各级时长（分钟）</label><input v-model="penaltyText" class="input mono"><small>例如：10, 60, 1440, 10080</small></div>
-                <div class="field"><label>第几次永久</label><input v-model.number="settings.permanent_after" class="input" type="number" min="2" max="20"></div>
+                <div class="field"><label>第几次长期治理</label><input v-model.number="settings.permanent_after" class="input" type="number" min="2" max="20"></div>
                 <div class="field"><label>升级冷却（秒）</label><input v-model.number="settings.escalation_cooldown_seconds" class="input" type="number" min="0" max="3600"></div>
                 <div class="field"><label>警告冷却（秒）</label><input v-model.number="settings.warning_cooldown_seconds" class="input" type="number" min="0" max="3600"></div>
               </div>
-              <div class="preview">群内警告示例：<code>警告：某成员触发群广告治理，当前10分钟内发送的所有消息将自动撤回。</code></div>
+              <div class="preview">群内警告示例：<code>警告：某成员触发群广告治理，已由QQ官方禁言10分钟。</code></div>
             </section>
 
             <section class="card panel">
-              <div class="table-head"><div><h2 class="section-title">成员治理状态</h2><p class="section-sub">状态按机器人、群和成员分别记录。</p></div><div class="filters"><select v-model="memberFilter" class="select small"><option value="all">全部</option><option value="blocked">正在撤回</option><option value="permanent">永久</option><option value="trusted">白名单</option></select><input v-model="search" class="input small" placeholder="搜索昵称、OpenID 或命中词"></div></div>
+              <div class="table-head"><div><h2 class="section-title">成员治理状态</h2><p class="section-sub">状态按机器人、群和成员分别记录。</p></div><div class="filters"><select v-model="memberFilter" class="select small"><option value="all">全部</option><option value="blocked">正在禁言</option><option value="permanent">长期治理</option><option value="trusted">白名单</option></select><input v-model="search" class="input small" placeholder="搜索昵称、OpenID 或命中词"></div></div>
               <div v-if="!filteredMembers.length" class="empty-row">暂无匹配记录。</div>
               <div v-for="member in filteredMembers" :key="member.id" class="member-row">
                 <div class="member-main"><strong>{{ member.member_name || '未获取昵称' }}</strong><small class="mono">{{ member.member_openid }}</small><small class="mono">群 {{ member.group_openid }}</small></div>
@@ -242,7 +244,7 @@ onMounted(async () => {
                 <div class="member-actions">
                   <button class="mini" :disabled="busyMember === member.id" @click="memberAction(member, 'release')">解除</button>
                   <button class="mini" :disabled="busyMember === member.id" @click="memberAction(member, 'reset')">解除并清零</button>
-                  <button v-if="!member.permanent" class="mini danger" :disabled="busyMember === member.id" @click="memberAction(member, 'permanent')">永久</button>
+                  <button v-if="!member.permanent" class="mini danger" :disabled="busyMember === member.id" @click="memberAction(member, 'permanent')">长期治理</button>
                   <button v-if="!member.trusted" class="mini" :disabled="busyMember === member.id" @click="memberAction(member, 'trust')">白名单</button>
                   <button v-else class="mini" :disabled="busyMember === member.id" @click="memberAction(member, 'untrust')">取消白名单</button>
                 </div>

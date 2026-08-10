@@ -8,6 +8,7 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 MAX_LOG_ROWS_PER_BOT = 2000
 LOG_TABLES = (
     (DATA_DIR / "group_verification.db", "verification_logs"),
+    (DATA_DIR / "group_management.db", "group_management_logs"),
     (DATA_DIR / "group_moderation.db", "moderation_logs"),
     (DATA_DIR / "library_delivery.db", "library_delivery_logs"),
 )

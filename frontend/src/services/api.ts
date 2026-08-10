@@ -141,6 +141,82 @@ export interface GroupVerificationStatus {
   }
 }
 
+export interface ManagedGroup {
+  bot_id: string
+  group_openid: string
+  group_name: string
+  source: string
+  last_seen_at: string
+}
+
+export interface OfficialJoinRequest {
+  join_request_id: string
+  group_openid: string
+  member_openid: string
+  union_openid: string
+  username: string
+  risk_tips: string
+  apply_at: string
+  apply_source: 'self_apply' | 'invited' | string
+  invited_by: string
+  bot: boolean
+  verify_info: {
+    method?: string
+    verify_message?: string
+    review_qa_list?: Array<{ question: string; answer: string }>
+  }
+  auto_strategy_id: string
+  status: 'pending' | 'approved' | 'declined' | 'auto_approved'
+  decision: string
+  decision_detail: string
+  updated_at: string
+}
+
+export interface GroupManagementStatus {
+  bot_id: string
+  app_id: string
+  bot_name: string
+  required_events: Array<{ code: string; configured: boolean }>
+  requirements_ready: boolean
+  groups: ManagedGroup[]
+  join_requests: OfficialJoinRequest[]
+  logs: Array<{
+    id: number
+    action: string
+    success: boolean
+    status_code?: number | null
+    detail: string
+    created_at: string
+  }>
+  limits: Record<string, number>
+}
+
+export interface ApprovalStrategy {
+  strategy_id: string
+  group_openids: string[]
+  group_ids: Array<string | number>
+  whitelist_user_count: number
+  is_enable: 'on' | 'off'
+  expire_at: string
+  created_at: string
+  updated_at: string
+  remark?: string
+}
+
+export interface GroupMuteSetting {
+  global_rule: {
+    mode?: 'none' | 'always' | 'schedule' | string
+    schedule_rules?: unknown[]
+    recurring_rules?: unknown[]
+  }
+  members: Array<{
+    member_openid: string
+    mute_expire_at: string
+    username: string
+    union_openid: string
+  }>
+}
+
 export interface GroupModerationSettings {
   bot_id: string
   enabled: boolean
@@ -150,6 +226,7 @@ export interface GroupModerationSettings {
   detect_content_keywords: boolean
   detect_nickname_keywords: boolean
   exempt_admins: boolean
+  use_official_mute: boolean
   retract_merged_messages: boolean
   retract_group_cards: boolean
   penalty_minutes: number[]
@@ -212,6 +289,7 @@ export interface GroupModerationStatus {
   behavior: {
     warning_before_penalty: boolean
     blocked_messages_retracted: boolean
+    official_mute_enabled: boolean
     outbound_messages_single_line: boolean
     scope: string
   }
@@ -235,6 +313,34 @@ export const api = {
   verifyGroupMember: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST' }),
   resetGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/reset`, { method: 'POST' }),
   closeGroupVerification: (sessionId: string) => request<GroupVerificationStatus>(`/group-verification/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST' }),
+  groupManagementStatus: (botId: string) => request<GroupManagementStatus>(`/group-management/status?bot_id=${encodeURIComponent(botId)}`),
+  enableGroupManagementEvents: (botId: string) => request<GroupManagementStatus>(`/group-management/events/${encodeURIComponent(botId)}/enable`, { method: 'POST' }),
+  syncJoinRequests: (botId: string, groupOpenid: string) =>
+    request<{ sync: { synced: number; pages: number; truncated: boolean }; status: GroupManagementStatus }>(`/group-management/join-requests/sync?bot_id=${encodeURIComponent(botId)}&group_openid=${encodeURIComponent(groupOpenid)}`, { method: 'POST' }),
+  decideJoinRequest: (botId: string, payload: {
+    group_openid: string
+    member_openid: string
+    join_request_id: string
+    op: 'approve' | 'decline'
+    reject_reason?: string
+    add_to_member_blacklist?: boolean
+  }) => request<{ result: { ok: boolean; decision: string }; status: GroupManagementStatus }>(`/group-management/join-requests/decision?bot_id=${encodeURIComponent(botId)}`, { method: 'POST', body: JSON.stringify(payload) }),
+  getGroupMutes: (botId: string, groupOpenid: string) => request<GroupMuteSetting>(`/group-management/mutes?bot_id=${encodeURIComponent(botId)}&group_openid=${encodeURIComponent(groupOpenid)}`),
+  setGroupMutes: (botId: string, payload: { group_openid: string; members: Array<{ op: 'add' | 'update' | 'del'; member_openid: string; mute_expire_at?: string }> }) =>
+    request<GroupMuteSetting>(`/group-management/mutes?bot_id=${encodeURIComponent(botId)}`, { method: 'POST', body: JSON.stringify(payload) }),
+  listApprovalStrategies: (botId: string) => request<{ strategies: ApprovalStrategy[]; truncated: boolean }>(`/group-management/strategies?bot_id=${encodeURIComponent(botId)}`),
+  createApprovalStrategy: (botId: string, payload: { group_mode: 'group_openids' | 'group_ids'; groups: string[]; is_enable: 'on' | 'off'; expire_at?: string | null; remark?: string }) =>
+    request<Record<string, unknown>>(`/group-management/strategies?bot_id=${encodeURIComponent(botId)}`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateApprovalStrategy: (botId: string, strategyId: string, payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/group-management/strategies/${encodeURIComponent(strategyId)}?bot_id=${encodeURIComponent(botId)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteApprovalStrategy: (botId: string, strategyId: string) =>
+    request<{ ok: boolean }>(`/group-management/strategies/${encodeURIComponent(strategyId)}?bot_id=${encodeURIComponent(botId)}`, { method: 'DELETE' }),
+  executeApprovalStrategy: (botId: string, strategyId: string) =>
+    request<{ ok: boolean; message: string }>(`/group-management/strategies/${encodeURIComponent(strategyId)}/execute?bot_id=${encodeURIComponent(botId)}`, { method: 'POST' }),
+  updateApprovalWhitelist: (botId: string, strategyId: string, payload: { op: 'add' | 'del'; whitelist_users: string[] }) =>
+    request<Record<string, unknown>>(`/group-management/strategies/${encodeURIComponent(strategyId)}/whitelist?bot_id=${encodeURIComponent(botId)}`, { method: 'POST', body: JSON.stringify(payload) }),
+  refreshManagedGroupInfo: (botId: string, groupOpenid: string) =>
+    request<Record<string, unknown>>(`/group-management/groups/info?bot_id=${encodeURIComponent(botId)}&group_openid=${encodeURIComponent(groupOpenid)}`, { method: 'POST' }),
   groupModerationStatus: (botId: string) => request<GroupModerationStatus>(`/group-moderation/status?bot_id=${encodeURIComponent(botId)}`),
   updateGroupModerationSettings: (botId: string, payload: Omit<GroupModerationSettings, 'bot_id' | 'updated_at'>) =>
     request<GroupModerationStatus>(`/group-moderation/settings/${encodeURIComponent(botId)}`, { method: 'PUT', body: JSON.stringify(payload) }),

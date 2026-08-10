@@ -172,7 +172,7 @@ onMounted(async () => {
         </section>
         <section class="card summary-card">
           <span>本地事件清单</span>
-          <strong>{{ selectedCount }} / {{ totalCount || 43 }}</strong>
+          <strong>{{ selectedCount }} / {{ totalCount || 44 }}</strong>
           <small>用于与 QQ 管理端勾选项进行人工核对</small>
         </section>
         <section class="card summary-card">
@@ -208,7 +208,7 @@ onMounted(async () => {
             <div class="catalog-head">
               <div>
                 <h2 class="section-title">完整事件清单</h2>
-                <p class="section-sub">共 {{ totalCount || 43 }} 项。勾选结果保存在本平台，不会自动修改 QQ 管理端。</p>
+                <p class="section-sub">共 {{ totalCount || 44 }} 项。勾选结果保存在本平台，不会自动修改 QQ 管理端。</p>
               </div>
               <input v-model="search" class="input search" placeholder="搜索事件名称或代码" />
             </div>

@@ -93,7 +93,9 @@ class QQBotClient:
         safe_headers = {
             key: value
             for key, value in response.headers.items()
-            if key.lower() in {"content-type", "date", "x-request-id", "trace-id"}
+            if key.lower() in {
+                "content-type", "date", "x-request-id", "trace-id", "x-tps-trace-id"
+            }
         }
         return {"status_code": response.status_code, "data": data, "headers": safe_headers}
 

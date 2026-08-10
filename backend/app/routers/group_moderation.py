@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +9,7 @@ from app.models.schemas import BotUpdate, GroupModerationSettingsUpdate
 from app.services.auth_deps import AuthUser, require_owned_bot, require_user
 from app.services.bot_repository import bot_repository
 from app.services.group_moderation_repository import group_moderation_repository
-from app.services.group_moderation_service import REQUIRED_EVENTS
+from app.services.group_moderation_service import REQUIRED_EVENTS, group_moderation_service
 
 router = APIRouter(prefix="/group-moderation", tags=["group-moderation"])
 
@@ -39,6 +40,7 @@ def _status_payload(bot_id: str, user: AuthUser) -> dict[str, Any]:
         "behavior": {
             "warning_before_penalty": True,
             "blocked_messages_retracted": True,
+            "official_mute_enabled": bool(group_moderation_repository.get_settings(bot_id).get("use_official_mute", True)),
             "outbound_messages_single_line": True,
             "scope": "bot_group_member",
         },
@@ -65,13 +67,23 @@ def update_moderation_settings(
 
 
 @router.post("/members/{member_id}/release")
-def release_member(
+async def release_member(
     member_id: str,
     reset_strikes: bool = Query(default=False),
     user: AuthUser = Depends(require_user),
 ) -> dict[str, Any]:
     member = _require_member(member_id)
     require_owned_bot(str(member["bot_id"]), user)
+    settings = group_moderation_repository.get_settings(str(member["bot_id"]))
+    if settings.get("use_official_mute", True):
+        await group_moderation_service.set_official_mute(
+            str(member["bot_id"]),
+            str(member["group_openid"]),
+            str(member["member_openid"]),
+            op="del",
+            member_id=member_id,
+            rule="manual_release",
+        )
     group_moderation_repository.release_member(member_id, reset_strikes=reset_strikes)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
@@ -82,9 +94,22 @@ def release_member(
 
 
 @router.post("/members/{member_id}/permanent")
-def make_member_permanent(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+async def make_member_permanent(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     member = _require_member(member_id)
     require_owned_bot(str(member["bot_id"]), user)
+    settings = group_moderation_repository.get_settings(str(member["bot_id"]))
+    if settings.get("use_official_mute", True):
+        durations = [int(value) for value in settings.get("penalty_minutes", []) if int(value) > 0]
+        renewal_minutes = durations[-1] if durations else 10080
+        await group_moderation_service.set_official_mute(
+            str(member["bot_id"]),
+            str(member["group_openid"]),
+            str(member["member_openid"]),
+            op="add",
+            mute_expire_at=(datetime.now(timezone.utc) + timedelta(minutes=renewal_minutes)).isoformat(),
+            member_id=member_id,
+            rule="manual_permanent",
+        )
     group_moderation_repository.make_permanent(member_id)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,
@@ -95,9 +120,19 @@ def make_member_permanent(member_id: str, user: AuthUser = Depends(require_user)
 
 
 @router.post("/members/{member_id}/trust")
-def trust_member(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
+async def trust_member(member_id: str, user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     member = _require_member(member_id)
     require_owned_bot(str(member["bot_id"]), user)
+    settings = group_moderation_repository.get_settings(str(member["bot_id"]))
+    if settings.get("use_official_mute", True):
+        await group_moderation_service.set_official_mute(
+            str(member["bot_id"]),
+            str(member["group_openid"]),
+            str(member["member_openid"]),
+            op="del",
+            member_id=member_id,
+            rule="manual_trust",
+        )
     group_moderation_repository.set_trusted(member_id, True)
     group_moderation_repository.add_log(
         bot_id=str(member["bot_id"]), member_id=member_id,

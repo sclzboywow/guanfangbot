@@ -13,18 +13,48 @@
 开发台提供：
 
 - QQ OpenAPI 请求调试
-- 43 项完整事件清单
+- 44 项完整事件清单（含 `GROUP_JOIN_REQUEST`）
 - HTTP 回调验证、签名校验与事件日志
-- 群成员入群数学题验证
+- QQ 官方入群审批、自动审批策略与成员禁言
+- 群成员入群后数学题兼容验证
 - 群广告识别、警告与阶梯撤回
 - SQLite 共享文库检索和百度网盘自动发货
 - 多机器人独立 QQ 凭证和 Access Token 缓存
 
 QQ Access Token 由后端在调用 OpenAPI 时自动获取、缓存并续期，不提供前端手动刷新操作。
 
-## 入群验证
+## QQ 官方群管理
 
-“功能开发 → 入群验证”提供按机器人启用的群成员验证：
+“功能开发 → 官方群管理”面向不熟悉接口的用户，所有操作均使用表单完成：
+
+- 实时接收 `GROUP_JOIN_REQUEST`，并可按群 OpenID 手动同步遗漏申请；
+- 通过、拒绝、填写拒绝原因或拒绝并加入群黑名单；
+- 按QQ群号或群 OpenID 创建自动审批策略；
+- 启停策略、修改到期时间和备注、增删关联群；
+- 批量新增或删除白名单QQ号，后台按官方每批 10000 个的限制自动分批；
+- 执行现有申请扫描，并明确提示该任务由QQ异步处理；
+- 查询成员禁言状态，新增、修改或解除官方禁言。
+
+机器人必须是目标群管理员，并在QQ开放平台勾选 `GROUP_JOIN_REQUEST`。平台内的一键启用只会将事件加入本地清单，不能代替QQ开放平台授权。
+
+群管理状态保存在 Docker 数据卷内的 `group_management.db`。QQ官方接口仍是审批、策略和禁言状态的事实来源，本地数据库仅保存群台账、事件申请和操作审计。
+
+已接入的官方能力：
+
+| 用户操作 | 官方接口 |
+| --- | --- |
+| 同步入群申请 | [`GET join_request_list`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_join_request_list.get.html) |
+| 通过、拒绝、拒绝并拉黑 | [`POST approval_join_request`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_approval_join_request_member_openid.post.html) |
+| 查询成员与全员禁言状态 | [`GET restrict_chat_setting`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_restrict_chat_setting.get.html) |
+| 单个或批量新增、修改、解除成员禁言 | [`POST restrict_chat_setting`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_restrict_chat_setting.post.html) |
+| 查询与创建自动审批策略 | [`GET strategy`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy.get.html) / [`POST strategy`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy.post.html) |
+| 修改与删除策略 | [`PATCH strategy`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy_strategy_id.patch.html) / [`DELETE strategy`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy_strategy_id.delete.html) |
+| 扫描现有申请 | [`POST execute`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy_strategy_id_execute.post.html) |
+| 批量增删白名单QQ号 | [`POST whitelist_users`](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_join_approval_strategy_strategy_id_whitelist_users.post.html) |
+
+## 入群后数学题验证（兼容模式）
+
+“官方群管理 → 兼容验证”保留原有按机器人启用的群成员验证：
 
 1. 收到 `GROUP_MEMBER_ADD` 后创建永久待验证记录，并向群内发送一道简单加减法题。
 2. 用户无需 @ 机器人，直接发送纯数字答案。
@@ -47,9 +77,9 @@ QQ Access Token 由后端在调用 OpenAPI 时自动获取、缓存并续期，�
 - 检测手机号、带区号座机以及 400/800 电话。
 - 检测带联系方式语义的微信号。
 - 检测可配置的消息广告词和昵称广告词。
-- 首次命中后撤回触发消息并发送单行警告；处罚期内该成员后续消息自动撤回。
-- 默认阶梯为 10 分钟、1 小时、24 小时、7 天，第 5 次明确违规后永久撤回。
-- 群主和管理员默认豁免；后台可以解除处罚、清零次数、手动永久治理或加入白名单。
+- 首次命中后撤回触发消息，并优先调用QQ官方成员禁言接口；可关闭官方群禁言并回退为连续撤回。
+- 默认阶梯为 10 分钟、1 小时、24 小时、7 天，第 5 次明确违规后进入长期治理。
+- 群主和管理员默认豁免；后台可以解除处罚、清零次数、手动长期治理或加入白名单。
 
 需要开通 `GROUP_MESSAGE_CREATE`，并确保机器人具备群管理员撤回权限。治理状态保存在 `group_moderation.db`。
 
@@ -100,7 +130,7 @@ BAIDU_OAUTH_TIMEOUT=15
 
 ## 事件状态检测
 
-事件页完整列出单聊、群、频道和互动事件，共 43 项。
+事件页完整列出单聊、群、频道和互动事件，共 44 项。
 
 状态分为：
 
@@ -117,6 +147,7 @@ QQ Webhook 当前没有公开接口可读取管理端已经勾选的事件列表
 - 后端：FastAPI、SQLite
 - 部署：Docker Compose、Nginx
 - 机器人配置：`bots.json`
+- 官方群管理：`group_management.db`
 - 入群验证：`group_verification.db`
 - 群消息治理：`group_moderation.db`
 - 文库会话与日志：`library_delivery.db`
@@ -168,6 +199,14 @@ https://你的域名/api/events/callback
 - `POST /api/events/callback/{app_id}`
 - `GET /api/group-verification/status?bot_id=...`
 - `PUT /api/group-verification/settings/{bot_id}`
+- `GET /api/group-management/status?bot_id=...`
+- `POST /api/group-management/join-requests/sync`
+- `POST /api/group-management/join-requests/decision`
+- `GET|POST /api/group-management/mutes`
+- `GET|POST /api/group-management/strategies`
+- `PATCH|DELETE /api/group-management/strategies/{strategy_id}`
+- `POST /api/group-management/strategies/{strategy_id}/execute`
+- `POST /api/group-management/strategies/{strategy_id}/whitelist`
 - `GET /api/group-moderation/status?bot_id=...`
 - `PUT /api/group-moderation/settings/{bot_id}`
 - `GET /api/library-delivery/status?bot_id=...`
