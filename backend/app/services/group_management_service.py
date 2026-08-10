@@ -310,6 +310,7 @@ class GroupManagementService:
         cursor = ""
         synced = 0
         pages = 0
+        seen_ids: set[str] = set()
         while pages < 10:
             data = await self._request(
                 bot_id,
@@ -327,19 +328,31 @@ class GroupManagementService:
                     continue
                 normalized = dict(item)
                 normalized["group_openid"] = group_openid
-                if self.repository.upsert_join_request(bot_id, normalized, source=source):
+                recorded = self.repository.upsert_join_request(bot_id, normalized, source=source)
+                if recorded:
                     synced += 1
+                    request_id = str(recorded.get("join_request_id") or "").strip()
+                    if request_id:
+                        seen_ids.add(request_id)
             pages += 1
             next_cursor = str(page.get("next_cursor") or "").strip()
             if not next_cursor or next_cursor == cursor:
                 cursor = ""
                 break
             cursor = next_cursor
+        truncated = bool(cursor)
+        pruned = 0
+        if not truncated:
+            # Full list pull: drop rotated/stale pending tokens no longer returned by QQ.
+            pruned = self.repository.prune_stale_pending(
+                bot_id, group_openid, keep_join_request_ids=seen_ids,
+            )
         keyword = await self.process_pending_keyword_rules(bot_id, group_openid=group_openid)
         return {
             "synced": synced,
             "pages": pages,
-            "truncated": bool(cursor),
+            "truncated": truncated,
+            "pruned": pruned,
             "keyword": keyword,
         }
 

@@ -141,6 +141,66 @@ class GroupManagementRepository:
                         f"ALTER TABLE group_management_settings ADD COLUMN {name} {definition}"
                     )
 
+            # Official join_request_id tokens rotate on each list pull; collapse stale pending dupes.
+            self._dedupe_pending_join_requests(connection)
+
+    @staticmethod
+    def _dedupe_pending_join_requests(connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            """
+            SELECT bot_id, group_openid, member_openid, join_request_id, updated_at
+            FROM official_join_requests
+            WHERE status='pending'
+            ORDER BY updated_at DESC, join_request_id DESC
+            """
+        ).fetchall()
+        keep: set[tuple[str, str, str]] = set()
+        delete_ids: list[tuple[str, str]] = []
+        for row in rows:
+            key = (str(row["bot_id"]), str(row["group_openid"]), str(row["member_openid"]))
+            if key in keep:
+                delete_ids.append((str(row["bot_id"]), str(row["join_request_id"])))
+            else:
+                keep.add(key)
+        for bot_id, join_request_id in delete_ids:
+            connection.execute(
+                "DELETE FROM official_join_requests WHERE bot_id=? AND join_request_id=?",
+                (bot_id, join_request_id),
+            )
+        return len(delete_ids)
+
+    def prune_stale_pending(
+        self,
+        bot_id: str,
+        group_openid: str,
+        *,
+        keep_join_request_ids: set[str],
+    ) -> int:
+        """Drop pending rows for a group whose tokens were not in the latest full sync."""
+        group_openid = str(group_openid or "").strip()
+        if not group_openid:
+            return 0
+        with self._lock, self._connect() as connection:
+            if not keep_join_request_ids:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM official_join_requests
+                    WHERE bot_id=? AND group_openid=? AND status='pending'
+                    """,
+                    (bot_id, group_openid),
+                )
+                return int(cursor.rowcount or 0)
+            placeholders = ",".join("?" for _ in keep_join_request_ids)
+            cursor = connection.execute(
+                f"""
+                DELETE FROM official_join_requests
+                WHERE bot_id=? AND group_openid=? AND status='pending'
+                  AND join_request_id NOT IN ({placeholders})
+                """,
+                (bot_id, group_openid, *keep_join_request_ids),
+            )
+            return int(cursor.rowcount or 0)
+
     def remember_group(
         self,
         bot_id: str,
@@ -394,6 +454,15 @@ class GroupManagementRepository:
         now = utc_now()
         self.remember_group(bot_id, group_openid, source=source)
         with self._lock, self._connect() as connection:
+            # QQ rotates join_request_id tokens; replace older pending rows for the same member.
+            connection.execute(
+                """
+                DELETE FROM official_join_requests
+                WHERE bot_id=? AND group_openid=? AND member_openid=?
+                  AND status='pending' AND join_request_id!=?
+                """,
+                (bot_id, group_openid, member_openid, join_request_id),
+            )
             connection.execute(
                 """
                 INSERT INTO official_join_requests(

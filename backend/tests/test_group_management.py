@@ -54,6 +54,63 @@ def test_existing_group_without_name_refreshes_info_on_event(tmp_path: Path) -> 
     assert client.requests[0][0:2] == ("GET", "/v2/groups/group-1/info")
 
 
+def test_join_request_token_rotation_replaces_pending_duplicate(tmp_path: Path) -> None:
+    repository = GroupManagementRepository(tmp_path / "management.db")
+    first = repository.upsert_join_request(
+        "bot-1",
+        {
+            "group_openid": "group-1",
+            "join_request_id": "token-old",
+            "member_openid": "member-1",
+            "username": "申请人",
+            "apply_at": "2026-08-11T01:00:00+08:00",
+        },
+        source="test",
+    )
+    assert first is not None
+    second = repository.upsert_join_request(
+        "bot-1",
+        {
+            "group_openid": "group-1",
+            "join_request_id": "token-new",
+            "member_openid": "member-1",
+            "username": "申请人",
+            "apply_at": "2026-08-11T01:00:00+08:00",
+            "verify_info": {"verify_message": "新令牌"},
+        },
+        source="test",
+    )
+    assert second is not None
+    requests = repository.list_join_requests("bot-1")
+    assert len(requests) == 1
+    assert requests[0]["join_request_id"] == "token-new"
+    assert requests[0]["verify_info"]["verify_message"] == "新令牌"
+
+
+def test_sync_prunes_stale_pending_tokens_after_full_list(tmp_path: Path) -> None:
+    client = FakeClient([
+        {"status_code": 200, "data": {"list": [{
+            "join_request_id": "token-live", "member_openid": "member-live", "username": "在列",
+        }], "next_cursor": ""}},
+    ])
+    service, repository = service_with_client(tmp_path / "management.db", client)
+    repository.upsert_join_request(
+        "bot-1",
+        {
+            "group_openid": "group-1",
+            "join_request_id": "token-stale",
+            "member_openid": "member-gone",
+            "username": "已不在官方列表",
+        },
+        source="seed",
+    )
+    result = asyncio.run(service.sync_join_requests("bot-1", "group-1"))
+    assert result["pruned"] == 1
+    requests = repository.list_join_requests("bot-1")
+    assert len(requests) == 1
+    assert requests[0]["join_request_id"] == "token-live"
+
+
 def test_join_request_event_is_persisted_and_group_is_remembered(tmp_path: Path) -> None:
     service, repository = service_with_client(tmp_path / "management.db", FakeClient())
     payload = {
@@ -105,6 +162,7 @@ def test_sync_uses_query_pagination_and_records_requests(tmp_path: Path) -> None
     assert result["synced"] == 1
     assert result["pages"] == 2
     assert result["truncated"] is False
+    assert result["pruned"] == 0
     assert result["keyword"] == {"checked": 0, "approved": 0, "declined": 0, "failed": 0}
     assert client.requests[0][2] == {"limit": "100"}
     assert client.requests[1][2] == {"limit": "100", "cursor": "next"}
