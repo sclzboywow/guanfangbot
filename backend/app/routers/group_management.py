@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models.schemas import (
     ApprovalStrategyCreate,
@@ -18,6 +18,7 @@ from app.services.bot_repository import bot_repository
 from app.services.group_management_repository import group_management_repository
 from app.services.group_management_service import REQUIRED_EVENTS, group_management_service
 from app.services.group_moderation_repository import group_moderation_repository
+from app.services.group_mute_service import group_mute_coordinator
 from app.services.group_verification_repository import group_verification_repository
 
 
@@ -113,6 +114,40 @@ def _status(bot_id: str, user: AuthUser) -> dict[str, Any]:
     }
 
 
+async def _release_manual_mute(bot_id: str, group_openid: str, member_openid: str) -> None:
+    """Release only the management-console mute source without clearing verification/moderation mutes."""
+    result = await group_mute_coordinator.release(
+        bot_id,
+        group_openid,
+        member_openid,
+        source="manual",
+    )
+    status_code = int(result.get("status_code", 500))
+    if status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "QQ 官方解除禁言失败",
+                "qq_status": status_code,
+                "qq_data": result.get("data"),
+            },
+        )
+
+    data = result.get("data")
+    untracked_manual_mute = (
+        isinstance(data, dict)
+        and data.get("message") == "该来源没有有效禁言，无需解除"
+        and not bool(result.get("still_muted"))
+    )
+    if untracked_manual_mute:
+        # No local lease exists at all: allow the console to clear an externally-created mute.
+        await group_management_service.set_member_mutes(
+            bot_id,
+            group_openid,
+            [{"op": "del", "member_openid": member_openid, "mute_expire_at": ""}],
+        )
+
+
 @router.get("/status")
 async def status(bot_id: str = Query(...), user: AuthUser = Depends(require_user)) -> dict[str, Any]:
     require_owned_bot(bot_id, user)
@@ -182,11 +217,17 @@ async def set_mutes(
     user: AuthUser = Depends(require_user),
 ) -> dict[str, Any]:
     require_owned_bot(bot_id, user)
-    return await group_management_service.set_member_mutes(
-        bot_id,
-        payload.group_openid,
-        [item.model_dump() for item in payload.members],
-    )
+    for item in payload.members:
+        member = item.model_dump()
+        if member["op"] == "del":
+            await _release_manual_mute(bot_id, payload.group_openid, member["member_openid"])
+        else:
+            await group_management_service.set_member_mutes(
+                bot_id,
+                payload.group_openid,
+                [member],
+            )
+    return await group_management_service.get_mute_setting(bot_id, payload.group_openid)
 
 
 @router.get("/strategies")
