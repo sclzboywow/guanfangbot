@@ -274,6 +274,88 @@ def test_wrong_attempt_limit_uses_official_mute(tmp_path: Path) -> None:
     assert client.requests[-1][3]["members"][0]["op"] == "add"
 
 
+def test_failed_member_messages_still_retracted_until_verified(tmp_path: Path) -> None:
+    repository, client, service = make_service(tmp_path)
+    repository.update_settings(
+        "bot-1", enabled=True, min_operand=1, max_operand=9,
+        max_wrong_attempts=1, failure_mute_minutes=60,
+    )
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MEMBER_ADD", {"d": {"group_openid": "g", "openid": "u"}},
+    ))
+    session = repository.list_sessions("bot-1")[0]
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MESSAGE_CREATE",
+        {"d": {"id": "wrong-fail", "group_openid": "g", "author": {"member_openid": "u"}, "content": "nope"}},
+    ))
+    assert repository.get_session(str(session["id"]))["status"] == "failed"
+    before = len(client.retracted)
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MESSAGE_CREATE",
+        {"d": {"id": "chat-after-mute", "group_openid": "g", "author": {"member_openid": "u"}, "content": "随便说话"}},
+    ))
+    assert len(client.retracted) == before + 1
+    assert repository.get_session(str(session["id"]))["status"] == "failed"
+
+
+def test_failed_member_can_still_pass_with_correct_answer(tmp_path: Path) -> None:
+    repository, client, service = make_service(tmp_path)
+    repository.update_settings(
+        "bot-1", enabled=True, min_operand=1, max_operand=9,
+        max_wrong_attempts=1, failure_mute_minutes=60,
+        success_message="验证通过了",
+    )
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MEMBER_ADD", {"d": {"group_openid": "g", "openid": "u"}},
+    ))
+    session = repository.list_sessions("bot-1")[0]
+    answer = str(session["answer"])
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MESSAGE_CREATE",
+        {"d": {"id": "wrong-then-mute", "group_openid": "g", "author": {"member_openid": "u"}, "content": "x"}},
+    ))
+    assert repository.get_session(str(session["id"]))["status"] == "failed"
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MESSAGE_CREATE",
+        {"d": {"id": "correct-after-fail", "group_openid": "g", "author": {"member_openid": "u"}, "content": answer}},
+    ))
+    passed = repository.get_session(str(session["id"]))
+    assert passed["status"] == "verified"
+    assert any(item["content"] == "验证通过了" for item in client.sent)
+    assert client.requests[-1][3]["members"][0]["op"] == "del"
+
+
+def test_expired_failure_mute_reopens_challenge(tmp_path: Path) -> None:
+    repository, client, service = make_service(tmp_path)
+    repository.update_settings(
+        "bot-1", enabled=True, min_operand=1, max_operand=9,
+        max_wrong_attempts=1, failure_mute_minutes=1,
+    )
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MEMBER_ADD", {"d": {"group_openid": "g", "openid": "u"}},
+    ))
+    session = repository.list_sessions("bot-1")[0]
+    asyncio.run(service.handle_event(
+        "bot-1", "GROUP_MESSAGE_CREATE",
+        {"d": {"id": "fail-for-reopen", "group_openid": "g", "author": {"member_openid": "u"}, "content": "bad"}},
+    ))
+    failed = repository.get_session(str(session["id"]))
+    assert failed["status"] == "failed"
+    # Simulate mute already ended.
+    with repository._lock, repository._connect() as connection:
+        connection.execute(
+            "UPDATE verification_sessions SET mute_expire_at=?, muted_until=? WHERE id=?",
+            ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00", session["id"]),
+        )
+    sent_before = len(client.sent)
+    assert asyncio.run(service.process_expired_failure_mutes()) == 1
+    reopened = repository.get_session(str(session["id"]))
+    assert reopened["status"] == "pending"
+    assert reopened["wrong_attempts"] == 0
+    assert len(client.sent) == sent_before + 1
+    assert "欢迎加入本群" in client.sent[-1]["content"]
+
+
 def test_timeout_and_reset_use_official_mute_then_unmute(tmp_path: Path) -> None:
     repository, client, service = make_service(tmp_path)
     repository.update_settings(

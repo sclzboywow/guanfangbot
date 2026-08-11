@@ -337,6 +337,40 @@ class GroupVerificationRepository:
             ).fetchone()
         return self._row_to_dict(row)
 
+    def get_unverified_session(
+        self,
+        bot_id: str,
+        group_openid: str,
+        member_openid: str,
+    ) -> dict[str, Any] | None:
+        """Pending or failed: member still must complete verification before free chat."""
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM verification_sessions
+                WHERE bot_id=? AND group_openid=? AND member_openid=?
+                  AND status IN ('pending', 'failed')
+                """,
+                (bot_id, group_openid, member_openid),
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def list_expired_failure_mutes(self, now: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """Failed sessions whose punishment mute has ended and need a fresh challenge."""
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM verification_sessions
+                WHERE status='failed'
+                  AND mute_expire_at IS NOT NULL
+                  AND mute_expire_at<=?
+                ORDER BY mute_expire_at
+                LIMIT ?
+                """,
+                (now or utc_now(), limit),
+            ).fetchall()
+        return [self._row_to_dict(row) or {} for row in rows]
+
     def list_sessions(self, bot_id: str, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(

@@ -271,7 +271,7 @@ class GroupModerationService:
             return
         if settings.get("exempt_admins", True) and extract_member_role(payload) in ADMIN_ROLES:
             return
-        if group_verification_repository.get_pending_session(bot_id, group_openid, member_openid) is not None:
+        if group_verification_repository.get_unverified_session(bot_id, group_openid, member_openid) is not None:
             return
         if not self.repository.claim_message(bot_id, message_id):
             return

@@ -170,6 +170,7 @@ class GroupVerificationService:
         while True:
             try:
                 await self.process_timeouts()
+                await self.process_expired_failure_mutes()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -346,7 +347,7 @@ class GroupVerificationService:
         member_openid = extract_member_openid(payload)
         if not group_openid or not member_openid:
             return
-        session = self.repository.get_pending_session(bot_id, group_openid, member_openid)
+        session = self.repository.get_unverified_session(bot_id, group_openid, member_openid)
         if session is None:
             return
         member_name = extract_member_name(payload)
@@ -373,6 +374,9 @@ class GroupVerificationService:
                 if updated:
                     await self._send_question(bot_id=bot_id, group_openid=group_openid, session=updated)
                 return
+            if str(session.get("status") or "") == "failed":
+                # Failure mute may still be active; release before treating as verified.
+                await self._set_member_mute(session, "del")
             self.repository.mark_verified(str(session["id"]))
             client = await self._client_provider(bot_id)
             result = await client.send_group_text(
@@ -394,6 +398,13 @@ class GroupVerificationService:
             status_code = int(result.get("status_code", 0)) or None
             retracted = status_code is not None and 200 <= status_code < 300
             detail = str(result.get("data", ""))
+        if str(session.get("status") or "") == "failed":
+            # Still unverified after punishment mute: keep retracting, do not "free pass".
+            self.repository.add_log(
+                bot_id=bot_id, session_id=str(session["id"]), action="retract_message",
+                success=retracted, status_code=status_code, detail=detail,
+            )
+            return
         updated = self.repository.record_wrong_message(
             str(session["id"]), retracted=retracted, status_code=status_code, detail=detail,
         )
@@ -416,6 +427,56 @@ class GroupVerificationService:
             if await self._fail_session(session, "timeout", settings):
                 processed += 1
         return processed
+
+    async def process_expired_failure_mutes(self) -> int:
+        """After failure mute ends, reopen verification so members cannot chat freely."""
+        processed = 0
+        for session in self.repository.list_expired_failure_mutes():
+            try:
+                if await self._reopen_after_failure_mute(session):
+                    processed += 1
+            except Exception:
+                logger.exception(
+                    "reopen verification after failure mute failed session=%s",
+                    session.get("id"),
+                )
+        return processed
+
+    async def _reopen_after_failure_mute(self, session: dict[str, Any]) -> bool:
+        if str(session.get("status") or "") != "failed":
+            return False
+        settings = self.repository.get_settings(str(session["bot_id"]))
+        if not settings.get("enabled"):
+            return False
+        required = self._challenge_order(settings)
+        if not required:
+            return False
+        # Official mute may already have expired; clear local lease / leftover mute.
+        await self._set_member_mute(session, "del")
+        challenge = self._challenge(settings, required[0])
+        updated = self.repository.replace_problem(
+            str(session["id"]),
+            required_challenges=required,
+            completed_challenges=[],
+            deadline_at=self._deadline(settings),
+            reset_attempts=True,
+            **challenge,
+        )
+        if updated is None:
+            return False
+        await self._send_question(
+            bot_id=str(updated["bot_id"]),
+            group_openid=str(updated["group_openid"]),
+            session=updated,
+        )
+        self.repository.add_log(
+            bot_id=str(updated["bot_id"]),
+            session_id=str(updated["id"]),
+            action="reopen_after_failure_mute",
+            success=True,
+            detail="禁言结束，已重新出题，需完成验证后才能正常发言",
+        )
+        return True
 
     async def reset_session(self, session_id: str) -> dict[str, Any]:
         session = self.repository.get_session(session_id)
