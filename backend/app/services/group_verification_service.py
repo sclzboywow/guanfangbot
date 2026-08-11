@@ -230,12 +230,14 @@ class GroupVerificationService:
         bot_id: str,
         group_openid: str,
         session: dict[str, Any],
+        reply_message_id: str | None = None,
         reply_event_id: str | None = None,
     ) -> dict[str, Any]:
         client = await self._client_provider(bot_id)
         result = await client.send_group_text(
             group_openid,
             self.question_message(str(session["question"]), str(session.get("challenge_type") or "math")),
+            msg_id=reply_message_id or None,
             event_id=reply_event_id or None,
         )
         self.repository.add_log(
@@ -366,13 +368,23 @@ class GroupVerificationService:
             remaining = [item for item in session.get("required_challenges") or [] if item not in completed]
             if remaining:
                 challenge = self._challenge(settings, remaining[0])
-                updated = self.repository.replace_problem(
-                    str(session["id"]), required_challenges=list(session.get("required_challenges") or []),
-                    completed_challenges=completed, deadline_at=self._deadline(settings),
-                    reset_attempts=False, **challenge,
+                next_session = {**session, **challenge}
+                send_result = await self._send_question(
+                    bot_id=bot_id,
+                    group_openid=group_openid,
+                    session=next_session,
+                    reply_message_id=message_id or None,
                 )
-                if updated:
-                    await self._send_question(bot_id=bot_id, group_openid=group_openid, session=updated)
+                if int(send_result.get("status_code", 500)) >= 300:
+                    return
+                self.repository.replace_problem(
+                    str(session["id"]),
+                    required_challenges=list(session.get("required_challenges") or []),
+                    completed_challenges=completed,
+                    deadline_at=self._deadline(settings),
+                    reset_attempts=False,
+                    **challenge,
+                )
                 return
             if str(session.get("status") or "") == "failed":
                 # Failure mute may still be active; release before treating as verified.
